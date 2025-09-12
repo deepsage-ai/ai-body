@@ -1,0 +1,41 @@
+# LLM大语言模型配置文件
+llm:
+  # 默认提供商
+  default_provider: "qwen"
+  
+  # 提供商配置
+  providers:
+    # 通义千问
+    qwen:
+      api_key: "${QWEN_API_KEY}"
+      base_url: "https://dashscope.aliyuncs.com/api/v1"
+      model: "qwen-turbo"
+      max_tokens: 4096
+      temperature: 0.7
+      timeout: "30s"
+      
+    # DeepSeek
+    deepseek:
+      api_key: "${DEEPSEEK_API_KEY}"
+      base_url: "https://api.deepseek.com/v1"
+      model: "deepseek-chat"
+      max_tokens: 4096
+      temperature: 0.7
+      timeout: "30s"
+      
+    # Ollama本地部署
+    ollama:
+      base_url: "http://localhost:11434"
+      model: "llama3.2"
+      max_tokens: 4096
+      temperature: 0.7
+      timeout: "60s"
+  
+  # Agent SDK集成配置
+  agent_sdk:
+    memory:
+      type: "conversation_buffer"
+      max_tokens: 8192
+    tools:
+      auto_register: true
+      timeout: "60s"

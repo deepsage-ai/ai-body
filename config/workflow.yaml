@@ -1,0 +1,54 @@
+# AI-Body 工作流配置文件
+workflow:
+  # 是否启用工作流
+  enabled: true
+  
+  # 决策提示词模板
+  decision_prompt: |
+    作为一个智能助手，请分析用户的请求并决定是否需要调用外部工具。
+
+    用户请求: {user_input}
+    
+    当前可用工具:
+    {available_tools}
+    
+    请根据用户请求分析是否需要调用工具：
+    - 如果用户请求需要获取实时信息、执行具体操作或访问外部资源，则应该调用相应的工具
+    - 如果用户请求是一般性问题、知识问答或不需要外部数据，则可以直接回答
+    
+    请以JSON格式返回你的决策：
+    {
+      "should_call_tool": boolean,
+      "tool_name": "工具名称(如果需要调用)",
+      "tool_args": {"参数名": "参数值"},
+      "reasoning": "决策理由"
+    }
+  
+  # 响应生成提示词模板
+  response_prompt: |
+    基于以下信息为用户生成回答：
+    
+    用户请求: {user_input}
+    
+    {tool_result_section}
+    
+    请生成一个清晰、有用、友好的回答。回答应该：
+    1. 直接回应用户的问题
+    2. 如果使用了工具，要说明信息来源
+    3. 保持专业和礼貌的语调
+    4. 控制回答长度，避免过于冗长
+  
+  # 工具结果为空时的模板
+  tool_result_section_template: |
+    工具调用结果: {tool_result}
+    使用的工具: {tool_name}
+  
+  # 执行配置
+  timeout: "30s"
+  max_retries: 3
+  
+  # 决策缓存配置
+  decision_cache:
+    enabled: true
+    ttl: "5m"
+    max_entries: 1000

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -232,7 +233,7 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 			}
 		}
 
-		// 显示工具
+		// 显示工具详细信息
 		tools, err := server.ListTools(ctx)
 		if err != nil {
 			fmt.Printf("%s  工具获取失败: %v%s\n", ColorRed, err, ColorReset)
@@ -241,7 +242,7 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 			totalTools += len(tools)
 			fmt.Printf("%s  工具 (%d个):%s\n", ColorGreen, len(tools), ColorReset)
 			for j, tool := range tools {
-				fmt.Printf("%s    [%d] %s: %s%s\n", ColorGray, j+1, tool.Name, tool.Description, ColorReset)
+				showDetailedToolInfo(j+1, tool)
 			}
 		}
 
@@ -250,6 +251,186 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 
 	fmt.Printf("\n%s总计: %d个MCP服务器, %d个工具, %d个健康服务器%s\n", ColorCyan, len(mcpServers), totalTools, healthyServers, ColorReset)
 	fmt.Printf("%s弹性特性: 自动重连、健康监控、故障恢复%s\n", ColorGray, ColorReset)
+}
+
+// showDetailedToolInfo 动态显示工具的详细信息（通用化处理）
+func showDetailedToolInfo(index int, tool interfaces.MCPTool) {
+	fmt.Printf("%s    [%d] %s: %s%s\n", ColorGray, index, tool.Name, tool.Description, ColorReset)
+
+	// 动态解析Schema
+	if tool.Schema != nil {
+		analyzeToolSchema(tool)
+	} else {
+		fmt.Printf("%s        无参数要求%s\n", ColorGray, ColorReset)
+	}
+
+	fmt.Println() // 空行分隔
+}
+
+// analyzeToolSchema 动态分析工具的参数schema
+func analyzeToolSchema(tool interfaces.MCPTool) {
+	fmt.Printf("%s        参数分析:%s\n", ColorBlue, ColorReset)
+
+	// 先进行类型断言
+	schemaMap, ok := tool.Schema.(map[string]interface{})
+	if !ok {
+		fmt.Printf("%s          Schema格式不支持解析%s\n", ColorRed, ColorReset)
+		return
+	}
+
+	// 显示整体类型
+	if schemaType, ok := schemaMap["type"]; ok {
+		fmt.Printf("%s          Schema类型: %v%s\n", ColorGray, schemaType, ColorReset)
+	}
+
+	// 动态解析properties
+	if properties, ok := schemaMap["properties"]; ok {
+		if propsMap, ok := properties.(map[string]interface{}); ok {
+			fmt.Printf("%s          可用参数:%s\n", ColorGray, ColorReset)
+
+			for paramName, paramInfo := range propsMap {
+				analyzeParameter(paramName, paramInfo)
+			}
+		}
+	}
+
+	// 显示必需参数
+	if required, ok := schemaMap["required"]; ok {
+		if reqList, ok := required.([]interface{}); ok {
+			fmt.Printf("%s          必需参数: [%s", ColorYellow, ColorReset)
+			for i, req := range reqList {
+				if i > 0 {
+					fmt.Printf(", ")
+				}
+				fmt.Printf("%s%v%s", ColorYellow, req, ColorReset)
+			}
+			fmt.Printf("%s]%s\n", ColorYellow, ColorReset)
+		}
+	}
+
+	// 生成动态使用示例
+	generateDynamicUsageExample(tool)
+}
+
+// analyzeParameter 动态分析单个参数
+func analyzeParameter(paramName string, paramInfo interface{}) {
+	if paramMap, ok := paramInfo.(map[string]interface{}); ok {
+		fmt.Printf("%s            %s:%s\n", ColorCyan, paramName, ColorReset)
+
+		// 参数类型
+		if paramType, ok := paramMap["type"]; ok {
+			fmt.Printf("%s              类型: %v%s\n", ColorGray, paramType, ColorReset)
+		}
+
+		// 参数描述
+		if paramDesc, ok := paramMap["description"]; ok {
+			fmt.Printf("%s              描述: %v%s\n", ColorGray, paramDesc, ColorReset)
+		}
+
+		// 枚举值（关键信息！）
+		if enumValues, ok := paramMap["enum"]; ok {
+			fmt.Printf("%s              支持的值: %s%v%s\n", ColorGreen, ColorGreen, enumValues, ColorReset)
+		}
+
+		// 示例值
+		if examples, ok := paramMap["examples"]; ok {
+			fmt.Printf("%s              示例: %s%v%s\n", ColorGreen, ColorGreen, examples, ColorReset)
+		}
+
+		// 默认值
+		if defaultValue, ok := paramMap["default"]; ok {
+			fmt.Printf("%s              默认值: %s%v%s\n", ColorGreen, ColorGreen, defaultValue, ColorReset)
+		}
+
+		// 格式限制
+		if format, ok := paramMap["format"]; ok {
+			fmt.Printf("%s              格式: %v%s\n", ColorYellow, format, ColorReset)
+		}
+
+		// 值范围
+		if minimum, ok := paramMap["minimum"]; ok {
+			fmt.Printf("%s              最小值: %v%s\n", ColorYellow, minimum, ColorReset)
+		}
+		if maximum, ok := paramMap["maximum"]; ok {
+			fmt.Printf("%s              最大值: %v%s\n", ColorYellow, maximum, ColorReset)
+		}
+
+		// 字符串长度限制
+		if minLength, ok := paramMap["minLength"]; ok {
+			fmt.Printf("%s              最小长度: %v%s\n", ColorYellow, minLength, ColorReset)
+		}
+		if maxLength, ok := paramMap["maxLength"]; ok {
+			fmt.Printf("%s              最大长度: %v%s\n", ColorYellow, maxLength, ColorReset)
+		}
+
+		// 正则模式
+		if pattern, ok := paramMap["pattern"]; ok {
+			fmt.Printf("%s              模式: %v%s\n", ColorYellow, pattern, ColorReset)
+		}
+	}
+}
+
+// generateDynamicUsageExample 根据schema动态生成使用示例
+func generateDynamicUsageExample(tool interfaces.MCPTool) {
+	fmt.Printf("%s        动态使用示例:%s\n", ColorCyan, ColorReset)
+
+	if tool.Schema == nil {
+		fmt.Printf("%s          %s()%s\n", ColorGreen, tool.Name, ColorReset)
+		return
+	}
+
+	// 构建示例参数
+	exampleArgs := make(map[string]interface{})
+
+	// 先进行Schema类型断言
+	schemaMap, ok := tool.Schema.(map[string]interface{})
+	if !ok {
+		fmt.Printf("%s          %s({})%s\n", ColorGreen, tool.Name, ColorReset)
+		return
+	}
+
+	if properties, ok := schemaMap["properties"]; ok {
+		if propsMap, ok := properties.(map[string]interface{}); ok {
+			for paramName, paramInfo := range propsMap {
+				if paramMap, ok := paramInfo.(map[string]interface{}); ok {
+					// 优先使用默认值
+					if defaultValue, ok := paramMap["default"]; ok {
+						exampleArgs[paramName] = defaultValue
+					} else if examples, ok := paramMap["examples"]; ok {
+						// 使用示例值
+						if exampleList, ok := examples.([]interface{}); ok && len(exampleList) > 0 {
+							exampleArgs[paramName] = exampleList[0]
+						}
+					} else if enumValues, ok := paramMap["enum"]; ok {
+						// 使用枚举值的第一个
+						if enumList, ok := enumValues.([]interface{}); ok && len(enumList) > 0 {
+							exampleArgs[paramName] = enumList[0]
+						}
+					} else {
+						// 根据类型生成占位符
+						if paramType, ok := paramMap["type"]; ok {
+							switch paramType {
+							case "string":
+								exampleArgs[paramName] = fmt.Sprintf("<%s>", paramName)
+							case "integer", "number":
+								exampleArgs[paramName] = 0
+							case "boolean":
+								exampleArgs[paramName] = false
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 生成JSON格式的调用示例
+	if len(exampleArgs) > 0 {
+		exampleJSON, _ := json.MarshalIndent(exampleArgs, "          ", "  ")
+		fmt.Printf("%s          %s(%s)%s\n", ColorGreen, tool.Name, string(exampleJSON), ColorReset)
+	} else {
+		fmt.Printf("%s          %s({})%s\n", ColorGreen, tool.Name, ColorReset)
+	}
 }
 
 // MCPHealthManager - SSE连接健康管理器

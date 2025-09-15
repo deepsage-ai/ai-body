@@ -4,13 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/Ingenimax/agent-sdk-go/pkg/agent"
 	"github.com/Ingenimax/agent-sdk-go/pkg/interfaces"
@@ -51,53 +47,37 @@ func main() {
 	// 创建工具注册器 - 保持streaming-chat原有结构
 	toolRegistry := tools.NewRegistry()
 
-	// === MCP 服务器自动发现和连接 ===
-	fmt.Printf("%s=== MCP服务器自动发现 ===%s\n", ColorCyan, ColorReset)
+	// === MCP 按需连接配置 ===
+	fmt.Printf("%s=== MCP按需连接配置 ===%s\n", ColorCyan, ColorReset)
 	var mcpServers []interfaces.MCPServer
-	ctx := context.Background()
 
-	// 1. 创建弹性HTTP MCP服务器（带自动重连）
+	// 配置LazyMCP服务器（不立即连接，模拟大模型调用模式）
 	baseURL := "http://sn.7soft.cn/sse"
-	fmt.Printf("%s正在创建弹性HTTP MCP服务器: %s%s\n", ColorYellow, baseURL, ColorReset)
+	fmt.Printf("%s配置LazyMCP服务器: %s%s\n", ColorYellow, baseURL, ColorReset)
 
-	httpServer, err := mcp.NewHTTPServer(ctx, mcp.HTTPServerConfig{
-		BaseURL: baseURL,
-	})
+	// 创建延迟连接的MCP服务器（真正按需：用时连接，用完关闭）
+	lazyServer := NewLazyMCPServer(baseURL)
+	mcpServers = append(mcpServers, lazyServer)
+	fmt.Printf("%s✅ LazyMCP服务器配置完成（用时连接，用完关闭）%s\n", ColorGreen, ColorReset)
+
+	// 测试连接以验证配置正确性
+	fmt.Printf("%s正在测试连接和工具发现...%s\n", ColorYellow, ColorReset)
+	tools, err := lazyServer.ListTools(context.Background())
 	if err != nil {
-		fmt.Printf("%sWarning: 初始HTTP MCP服务器创建失败: %v%s\n", ColorYellow, err, ColorReset)
+		fmt.Printf("%sWarning: 测试连接失败: %v%s\n", ColorYellow, err, ColorReset)
 	} else {
-		// 使用弹性包装器
-		resilientServer := NewResilientMCPServer(httpServer, baseURL)
-		mcpServers = append(mcpServers, resilientServer)
-		fmt.Printf("%s✅ 弹性HTTP MCP服务器创建成功（支持自动重连）%s\n", ColorGreen, ColorReset)
-
-		// 列出初始工具
-		tools, err := resilientServer.ListTools(ctx)
-		if err != nil {
-			fmt.Printf("%sWarning: 获取初始工具列表失败: %v%s\n", ColorYellow, err, ColorReset)
-		} else {
-			fmt.Printf("%s发现 %d 个弹性MCP工具:%s\n", ColorGreen, len(tools), ColorReset)
-			for i, tool := range tools {
-				fmt.Printf("%s  [%d] %s: %s%s\n", ColorGray, i+1, tool.Name, tool.Description, ColorReset)
-			}
-		}
-
-		// 显示健康状态
-		if resilientServer.IsHealthy() {
-			fmt.Printf("%s✅ MCP服务器健康状态：正常%s\n", ColorGreen, ColorReset)
-		} else {
-			fmt.Printf("%s⚠️ MCP服务器健康状态：异常%s\n", ColorYellow, ColorReset)
+		fmt.Printf("%s发现 %d 个MCP工具:%s\n", ColorGreen, len(tools), ColorReset)
+		for i, tool := range tools {
+			fmt.Printf("%s  [%d] %s: %s%s\n", ColorGray, i+1, tool.Name, tool.Description, ColorReset)
 		}
 	}
-
-	// STDIO MCP服务器已移除，专注HTTP MCP集成
 
 	// === 创建智能体 - 基于streaming-chat + MCP集成 ===
 	var agentInstance *agent.Agent
 
 	if len(mcpServers) > 0 {
-		// 有弹性MCP服务器时，使用WithMCPServers
-		fmt.Printf("%s创建弹性MCP智能体 (连接 %d 个弹性MCP服务器)...%s\n", ColorYellow, len(mcpServers), ColorReset)
+		// 有MCP服务器时，使用WithMCPServers
+		fmt.Printf("%s创建MCP智能体 (连接 %d 个MCP服务器)...%s\n", ColorYellow, len(mcpServers), ColorReset)
 		agentInstance, err = agent.NewAgent(
 			agent.WithLLM(openaiClient),
 			agent.WithMemory(memory.NewConversationBuffer()),
@@ -130,8 +110,8 @@ func main() {
 	fmt.Printf("\n%s=== AI-Body 智能流式对话 (MCP增强版) ===%s\n", ColorCyan, ColorReset)
 	fmt.Printf("%s连接到 Ollama (%s) - 流式模式%s\n", ColorGreen, modelName, ColorReset)
 	if len(mcpServers) > 0 {
-		fmt.Printf("%s弹性MCP集成: 支持 %d 个服务器的自动工具调用+自动重连%s\n", ColorGreen, len(mcpServers), ColorReset)
-		fmt.Printf("%s输入 'tools' 查看可用MCP工具和健康状态%s\n", ColorYellow, ColorReset)
+		fmt.Printf("%sMCP集成: 支持 %d 个服务器的智能工具调用（按需连接）%s\n", ColorGreen, len(mcpServers), ColorReset)
+		fmt.Printf("%s输入 'tools' 查看可用MCP工具%s\n", ColorYellow, ColorReset)
 	}
 	fmt.Printf("%s输入 'exit' 或 'quit' 退出%s\n", ColorYellow, ColorReset)
 	fmt.Printf("%s================================================%s\n\n", ColorCyan, ColorReset)
@@ -139,6 +119,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// 按照streaming-chat示例创建上下文
+	ctx := context.Background()
 	ctx = multitenancy.WithOrgID(ctx, "ai-body-streaming-mcp-demo")
 	ctx = context.WithValue(ctx, memory.ConversationIDKey, "streaming-mcp-conversation-001")
 
@@ -209,7 +190,7 @@ func main() {
 
 // 显示MCP服务器的能力
 func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
-	fmt.Printf("%s=== 弹性MCP服务器能力总览 ===%s\n", ColorCyan, ColorReset)
+	fmt.Printf("%s=== MCP服务器能力总览 ===%s\n", ColorCyan, ColorReset)
 
 	if len(mcpServers) == 0 {
 		fmt.Printf("%s当前无可用MCP服务器%s\n", ColorGray, ColorReset)
@@ -218,26 +199,15 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 
 	ctx := context.Background()
 	totalTools := 0
-	healthyServers := 0
 
 	for i, server := range mcpServers {
-		fmt.Printf("\n%s[弹性MCP服务器 %d]%s\n", ColorYellow, i+1, ColorReset)
-
-		// 检查是否是ResilientMCPServer并显示健康状态
-		if resilientServer, ok := server.(*ResilientMCPServer); ok {
-			if resilientServer.IsHealthy() {
-				fmt.Printf("%s  健康状态: ✅ 正常%s\n", ColorGreen, ColorReset)
-				healthyServers++
-			} else {
-				fmt.Printf("%s  健康状态: ⚠️ 异常（自动重连中）%s\n", ColorYellow, ColorReset)
-			}
-		}
+		fmt.Printf("\n%s[MCP服务器 %d]%s\n", ColorYellow, i+1, ColorReset)
 
 		// 显示工具详细信息
 		tools, err := server.ListTools(ctx)
 		if err != nil {
 			fmt.Printf("%s  工具获取失败: %v%s\n", ColorRed, err, ColorReset)
-			fmt.Printf("%s  提示: 弹性服务器将自动尝试重连%s\n", ColorGray, ColorReset)
+			fmt.Printf("%s  提示: 请检查MCP服务器连接状态%s\n", ColorGray, ColorReset)
 		} else {
 			totalTools += len(tools)
 			fmt.Printf("%s  工具 (%d个):%s\n", ColorGreen, len(tools), ColorReset)
@@ -245,12 +215,10 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 				showDetailedToolInfo(j+1, tool)
 			}
 		}
-
-		// MCP服务器当前只支持工具，不支持提示词
 	}
 
-	fmt.Printf("\n%s总计: %d个MCP服务器, %d个工具, %d个健康服务器%s\n", ColorCyan, len(mcpServers), totalTools, healthyServers, ColorReset)
-	fmt.Printf("%s弹性特性: 自动重连、健康监控、故障恢复%s\n", ColorGray, ColorReset)
+	fmt.Printf("\n%s总计: %d个MCP服务器, %d个工具%s\n", ColorCyan, len(mcpServers), totalTools, ColorReset)
+	fmt.Printf("%s特性: LazyMCP按需连接，用时连接用完关闭%s\n", ColorGray, ColorReset)
 }
 
 // showDetailedToolInfo 动态显示工具的详细信息（通用化处理）
@@ -433,246 +401,96 @@ func generateDynamicUsageExample(tool interfaces.MCPTool) {
 	}
 }
 
-// MCPHealthManager - SSE连接健康管理器
-type MCPHealthManager struct {
-	server      interfaces.MCPServer
-	baseURL     string
-	isHealthy   atomic.Bool
-	mu          sync.RWMutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	reconnectCh chan struct{}
+// LazyMCPServer - 真正按需连接的MCP服务器包装器
+// 模拟大模型调用模式：需要时连接，用完立即关闭
+type LazyMCPServer struct {
+	baseURL string
 }
 
-// NewMCPHealthManager 创建健康管理器
-func NewMCPHealthManager(server interfaces.MCPServer, baseURL string) *MCPHealthManager {
-	ctx, cancel := context.WithCancel(context.Background())
-	m := &MCPHealthManager{
-		server:      server,
-		baseURL:     baseURL,
-		ctx:         ctx,
-		cancel:      cancel,
-		reconnectCh: make(chan struct{}, 1),
-	}
-	m.isHealthy.Store(true)
-	return m
-}
-
-// Start 启动健康检查
-func (m *MCPHealthManager) Start() {
-	go m.healthCheckLoop()
-	fmt.Printf("%s🔄 MCP健康管理器已启动%s\n", ColorGreen, ColorReset)
-}
-
-// Stop 停止健康检查
-func (m *MCPHealthManager) Stop() {
-	m.cancel()
-	close(m.reconnectCh)
-}
-
-// IsHealthy 检查连接是否健康
-func (m *MCPHealthManager) IsHealthy() bool {
-	return m.isHealthy.Load()
-}
-
-// healthCheckLoop 健康检查循环
-func (m *MCPHealthManager) healthCheckLoop() {
-	ticker := time.NewTicker(30 * time.Second) // 每30秒检查一次
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			m.performHealthCheck()
-		case <-m.ctx.Done():
-			return
-		}
+// NewLazyMCPServer 创建延迟连接的MCP服务器
+func NewLazyMCPServer(baseURL string) *LazyMCPServer {
+	return &LazyMCPServer{
+		baseURL: baseURL,
 	}
 }
 
-// performHealthCheck 执行健康检查
-func (m *MCPHealthManager) performHealthCheck() {
-	// 使用轻量级的ListTools调用检查连接状态
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := m.server.ListTools(ctx)
+// createFreshConnection 创建新的MCP连接（每次调用独立连接）
+func (l *LazyMCPServer) createFreshConnection(ctx context.Context) (interfaces.MCPServer, error) {
+	// 直接使用传入的上下文，不设置超时，避免连接被提前关闭
+	server, err := mcp.NewHTTPServer(ctx, mcp.HTTPServerConfig{
+		BaseURL: l.baseURL,
+	})
 	if err != nil {
-		if m.isHealthy.Load() {
-			fmt.Printf("%s⚠️ MCP连接不健康: %v，触发重连...%s\n", ColorYellow, err, ColorReset)
-			m.isHealthy.Store(false)
-			m.triggerReconnect()
-		}
-	} else {
-		if !m.isHealthy.Load() {
-			fmt.Printf("%s✅ MCP连接已恢复健康%s\n", ColorGreen, ColorReset)
-		}
-		m.isHealthy.Store(true)
-	}
-}
-
-// triggerReconnect 触发重连
-func (m *MCPHealthManager) triggerReconnect() {
-	go m.reconnectLoop()
-}
-
-// reconnectLoop 重连循环，使用指数退避
-func (m *MCPHealthManager) reconnectLoop() {
-	backoff := 1 * time.Second
-	maxBackoff := 30 * time.Second
-	maxRetries := 10
-	retryCount := 0
-
-	for !m.isHealthy.Load() && retryCount < maxRetries {
-		select {
-		case <-m.ctx.Done():
-			return
-		default:
-		}
-
-		retryCount++
-		fmt.Printf("%s🔄 尝试重连MCP服务器 (第%d次)...%s\n", ColorYellow, retryCount, ColorReset)
-
-		// 重新创建MCP服务器连接
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		newServer, err := mcp.NewHTTPServer(ctx, mcp.HTTPServerConfig{
-			BaseURL: m.baseURL,
-		})
-		cancel()
-
-		if err == nil {
-			// 测试新连接
-			testCtx, testCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, testErr := newServer.ListTools(testCtx)
-			testCancel()
-
-			if testErr == nil {
-				// 更新服务器引用
-				m.mu.Lock()
-				m.server = newServer
-				m.mu.Unlock()
-				m.isHealthy.Store(true)
-				fmt.Printf("%s✅ MCP服务器重连成功%s\n", ColorGreen, ColorReset)
-
-				// 通知等待的调用者
-				select {
-				case m.reconnectCh <- struct{}{}:
-				default:
-				}
-				return
-			}
-		}
-
-		// 等待后重试
-		time.Sleep(backoff)
-		if backoff < maxBackoff {
-			backoff *= 2
-		}
+		return nil, fmt.Errorf("创建MCP连接失败: %w", err)
 	}
 
-	if !m.isHealthy.Load() {
-		fmt.Printf("%s❌ MCP服务器重连失败，已达到最大重试次数%s\n", ColorRed, ColorReset)
-	}
+	return server, nil
 }
 
-// GetServer 获取健康的服务器实例
-func (m *MCPHealthManager) GetServer() (interfaces.MCPServer, error) {
-	if m.isHealthy.Load() {
-		m.mu.RLock()
-		server := m.server
-		m.mu.RUnlock()
-		return server, nil
-	}
+// executeWithFreshConnection 使用新连接执行操作的通用模式
+func (l *LazyMCPServer) executeWithFreshConnection(ctx context.Context, operation func(interfaces.MCPServer) (interface{}, error)) (interface{}, error) {
+	fmt.Printf("%s[LazyMCP] 创建新连接...%s\n", ColorGreen, ColorReset)
 
-	// 等待重连完成
-	select {
-	case <-m.reconnectCh:
-		if m.isHealthy.Load() {
-			m.mu.RLock()
-			server := m.server
-			m.mu.RUnlock()
-			return server, nil
-		}
-	case <-time.After(10 * time.Second):
-		return nil, errors.New("MCP服务器重连超时")
-	case <-m.ctx.Done():
-		return nil, errors.New("MCP健康管理器已停止")
-	}
-
-	return nil, errors.New("MCP服务器不可用")
-}
-
-// ResilientMCPServer - 具备自动恢复能力的MCP服务器包装
-type ResilientMCPServer struct {
-	healthManager *MCPHealthManager
-}
-
-// NewResilientMCPServer 创建弹性MCP服务器
-func NewResilientMCPServer(server interfaces.MCPServer, baseURL string) *ResilientMCPServer {
-	healthManager := NewMCPHealthManager(server, baseURL)
-	healthManager.Start()
-
-	return &ResilientMCPServer{
-		healthManager: healthManager,
-	}
-}
-
-// Initialize 实现MCPServer接口
-func (r *ResilientMCPServer) Initialize(ctx context.Context) error {
-	server, err := r.healthManager.GetServer()
-	if err != nil {
-		return err
-	}
-	return server.Initialize(ctx)
-}
-
-// ListTools 实现MCPServer接口 - 带自动重连
-func (r *ResilientMCPServer) ListTools(ctx context.Context) ([]interfaces.MCPTool, error) {
-	server, err := r.healthManager.GetServer()
+	// 创建新连接
+	server, err := l.createFreshConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	tools, err := server.ListTools(ctx)
-	if err != nil {
-		// 工具调用失败，可能是连接问题，标记为不健康
-		r.healthManager.isHealthy.Store(false)
-		r.healthManager.triggerReconnect()
-		return nil, err
-	}
+	// 确保连接在函数结束时立即关闭
+	defer func() {
+		fmt.Printf("%s[LazyMCP] 关闭连接...%s\n", ColorGreen, ColorReset)
+		if closeErr := server.Close(); closeErr != nil {
+			fmt.Printf("%sWarning: 关闭MCP连接失败: %v%s\n", ColorYellow, closeErr, ColorReset)
+		}
+	}()
 
-	return tools, nil
-}
-
-// CallTool 实现MCPServer接口 - 带自动重连
-func (r *ResilientMCPServer) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
-	server, err := r.healthManager.GetServer()
+	// 执行操作
+	result, err := operation(server)
 	if err != nil {
-		return nil, err
-	}
-
-	result, err := server.CallTool(ctx, name, args)
-	if err != nil {
-		// 工具调用失败，可能是连接问题，标记为不健康
-		r.healthManager.isHealthy.Store(false)
-		r.healthManager.triggerReconnect()
 		return nil, err
 	}
 
 	return result, nil
 }
 
-// Close 实现MCPServer接口
-func (r *ResilientMCPServer) Close() error {
-	r.healthManager.Stop()
-	server, err := r.healthManager.GetServer()
-	if err != nil {
-		return nil // 如果获取不到server，说明已经关闭了
-	}
-	return server.Close()
+// Initialize 实现MCPServer接口
+func (l *LazyMCPServer) Initialize(ctx context.Context) error {
+	// 对于LazyMCP，初始化就是测试连接能力
+	_, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
+		return nil, server.Initialize(ctx)
+	})
+	return err
 }
 
-// IsHealthy 检查服务器健康状态
-func (r *ResilientMCPServer) IsHealthy() bool {
-	return r.healthManager.IsHealthy()
+// ListTools 实现MCPServer接口 - 每次调用创建新连接
+func (l *LazyMCPServer) ListTools(ctx context.Context) ([]interfaces.MCPTool, error) {
+	result, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
+		return server.ListTools(ctx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]interfaces.MCPTool), nil
+}
+
+// CallTool 实现MCPServer接口 - 每次调用创建新连接
+func (l *LazyMCPServer) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
+	fmt.Printf("%s[LazyMCP] 调用工具: %s%s\n", ColorYellow, name, ColorReset)
+
+	result, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
+		return server.CallTool(ctx, name, args)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*interfaces.MCPToolResponse), nil
+}
+
+// Close 实现MCPServer接口 - 对于LazyMCP，Close不需要做任何事
+func (l *LazyMCPServer) Close() error {
+	// LazyMCP每次调用后都会立即关闭连接
+	// 所以这里不需要做任何清理工作
+	fmt.Printf("%s[LazyMCP] Close调用（无需清理）%s\n", ColorGray, ColorReset)
+	return nil
 }

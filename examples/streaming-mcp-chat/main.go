@@ -416,8 +416,9 @@ func NewLazyMCPServer(baseURL string) *LazyMCPServer {
 
 // createFreshConnection 创建新的MCP连接（每次调用独立连接）
 func (l *LazyMCPServer) createFreshConnection(ctx context.Context) (interfaces.MCPServer, error) {
-	// 直接使用传入的上下文，不设置超时，避免连接被提前关闭
-	server, err := mcp.NewHTTPServer(ctx, mcp.HTTPServerConfig{
+	// 使用独立的背景上下文创建连接，避免传入上下文的超时影响
+	// 这确保MCP连接不会因为调用链的超时而意外关闭
+	server, err := mcp.NewHTTPServer(context.Background(), mcp.HTTPServerConfig{
 		BaseURL: l.baseURL,
 	})
 	if err != nil {
@@ -445,10 +446,10 @@ func (l *LazyMCPServer) executeWithFreshConnection(ctx context.Context, operatio
 		}
 	}()
 
-	// 执行操作
+	// 执行操作（使用传入的上下文以保留调用方的超时控制）
 	result, err := operation(server)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("MCP操作执行失败: %w", err)
 	}
 
 	return result, nil
@@ -471,7 +472,104 @@ func (l *LazyMCPServer) ListTools(ctx context.Context) ([]interfaces.MCPTool, er
 	if err != nil {
 		return nil, err
 	}
-	return result.([]interfaces.MCPTool), nil
+
+	tools := result.([]interfaces.MCPTool)
+
+	// 添加详细的Schema调试输出
+	fmt.Printf("%s[LazyMCP] Schema调试信息:%s\n", ColorYellow, ColorReset)
+	for i, tool := range tools {
+		fmt.Printf("%s  工具 %d: %s%s\n", ColorCyan, i+1, tool.Name, ColorReset)
+		fmt.Printf("%s    描述: %s%s\n", ColorGray, tool.Description, ColorReset)
+
+		if tool.Schema != nil {
+			fmt.Printf("%s    Schema存在: %T%s\n", ColorGreen, tool.Schema, ColorReset)
+
+			// 处理*jsonschema.Schema类型
+			schemaStr := fmt.Sprintf("%v", tool.Schema)
+			if strings.Contains(schemaStr, "<anonymous schema>") {
+				fmt.Printf("%s    ⚠️ Schema信息被隐藏，尝试JSON序列化...%s\n", ColorYellow, ColorReset)
+
+				// 尝试将schema转换为JSON来查看其内容
+				if schemaBytes, err := json.Marshal(tool.Schema); err == nil {
+					var schemaMap map[string]interface{}
+					if err := json.Unmarshal(schemaBytes, &schemaMap); err == nil {
+						fmt.Printf("%s    JSON序列化成功:%s\n", ColorGreen, ColorReset)
+
+						if properties, exists := schemaMap["properties"]; exists {
+							fmt.Printf("%s    参数定义: %+v%s\n", ColorBlue, properties, ColorReset)
+						}
+
+						if required, exists := schemaMap["required"]; exists {
+							fmt.Printf("%s    必需参数: %+v%s\n", ColorGreen, required, ColorReset)
+						}
+
+						if schemaType, exists := schemaMap["type"]; exists {
+							fmt.Printf("%s    Schema类型: %+v%s\n", ColorCyan, schemaType, ColorReset)
+						}
+					} else {
+						fmt.Printf("%s    JSON反序列化失败: %v%s\n", ColorRed, err, ColorReset)
+					}
+				} else {
+					fmt.Printf("%s    JSON序列化失败: %v%s\n", ColorRed, err, ColorReset)
+				}
+			} else {
+				// 尝试直接作为map处理
+				if schemaMap, ok := tool.Schema.(map[string]interface{}); ok {
+					if properties, exists := schemaMap["properties"]; exists {
+						fmt.Printf("%s    参数定义: %+v%s\n", ColorBlue, properties, ColorReset)
+					} else {
+						fmt.Printf("%s    ⚠️ 缺少properties字段%s\n", ColorYellow, ColorReset)
+					}
+
+					if required, exists := schemaMap["required"]; exists {
+						fmt.Printf("%s    必需参数: %+v%s\n", ColorGreen, required, ColorReset)
+					}
+				} else {
+					fmt.Printf("%s    ⚠️ Schema格式异常: %+v%s\n", ColorRed, tool.Schema, ColorReset)
+				}
+			}
+		} else {
+			fmt.Printf("%s    ❌ Schema为空%s\n", ColorRed, ColorReset)
+		}
+		fmt.Println()
+	}
+
+	// 转换schema格式，确保LLM能正确理解工具参数
+	convertedTools := make([]interfaces.MCPTool, len(tools))
+	for i, tool := range tools {
+		convertedTools[i] = l.convertToolSchema(tool)
+	}
+
+	return convertedTools, nil
+}
+
+// convertToolSchema 将*jsonschema.Schema转换为标准的map格式
+func (l *LazyMCPServer) convertToolSchema(tool interfaces.MCPTool) interfaces.MCPTool {
+	if tool.Schema == nil {
+		return tool
+	}
+
+	// 尝试将*jsonschema.Schema转换为map[string]interface{}
+	if schemaBytes, err := json.Marshal(tool.Schema); err == nil {
+		var schemaMap map[string]interface{}
+		if err := json.Unmarshal(schemaBytes, &schemaMap); err == nil {
+			fmt.Printf("%s[Schema转换] %s: 成功转换为标准格式%s\n", ColorGreen, tool.Name, ColorReset)
+
+			// 创建新的工具对象，使用转换后的schema
+			return interfaces.MCPTool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Schema:      schemaMap, // 使用转换后的map格式
+			}
+		} else {
+			fmt.Printf("%s[Schema转换] %s: JSON反序列化失败: %v%s\n", ColorRed, tool.Name, err, ColorReset)
+		}
+	} else {
+		fmt.Printf("%s[Schema转换] %s: JSON序列化失败: %v%s\n", ColorRed, tool.Name, err, ColorReset)
+	}
+
+	// 如果转换失败，返回原始工具
+	return tool
 }
 
 // CallTool 实现MCPServer接口 - 每次调用创建新连接

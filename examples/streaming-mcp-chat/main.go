@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Ingenimax/agent-sdk-go/pkg/agent"
 	"github.com/Ingenimax/agent-sdk-go/pkg/interfaces"
@@ -51,18 +53,18 @@ func main() {
 	fmt.Printf("%s=== MCP按需连接配置 ===%s\n", ColorCyan, ColorReset)
 	var mcpServers []interfaces.MCPServer
 
-	// 配置LazyMCP服务器（不立即连接，模拟大模型调用模式）
+	// 配置会话级MCP管理器（连接复用 + 调用去重）
 	baseURL := "http://sn.7soft.cn/sse"
-	fmt.Printf("%s配置LazyMCP服务器: %s%s\n", ColorYellow, baseURL, ColorReset)
+	fmt.Printf("%s配置会话级MCP管理器: %s%s\n", ColorYellow, baseURL, ColorReset)
 
-	// 创建延迟连接的MCP服务器（真正按需：用时连接，用完关闭）
-	lazyServer := NewLazyMCPServer(baseURL)
-	mcpServers = append(mcpServers, lazyServer)
-	fmt.Printf("%s✅ LazyMCP服务器配置完成（用时连接，用完关闭）%s\n", ColorGreen, ColorReset)
+	// 创建会话级MCP管理器（一个会话回合 = 一个连接 + 去重）
+	sessionManager := NewSessionMCPManager(baseURL)
+	mcpServers = append(mcpServers, sessionManager)
+	fmt.Printf("%s✅ 会话级MCP管理器配置完成（连接复用+去重）%s\n", ColorGreen, ColorReset)
 
 	// 测试连接以验证配置正确性
 	fmt.Printf("%s正在测试连接和工具发现...%s\n", ColorYellow, ColorReset)
-	tools, err := lazyServer.ListTools(context.Background())
+	tools, err := sessionManager.ListTools(context.Background())
 	if err != nil {
 		fmt.Printf("%sWarning: 测试连接失败: %v%s\n", ColorYellow, err, ColorReset)
 	} else {
@@ -110,7 +112,7 @@ func main() {
 	fmt.Printf("\n%s=== AI-Body 智能流式对话 (MCP增强版) ===%s\n", ColorCyan, ColorReset)
 	fmt.Printf("%s连接到 Ollama (%s) - 流式模式%s\n", ColorGreen, modelName, ColorReset)
 	if len(mcpServers) > 0 {
-		fmt.Printf("%sMCP集成: 支持 %d 个服务器的智能工具调用（按需连接）%s\n", ColorGreen, len(mcpServers), ColorReset)
+		fmt.Printf("%sMCP集成: 支持 %d 个服务器的智能工具调用（会话级连接）%s\n", ColorGreen, len(mcpServers), ColorReset)
 		fmt.Printf("%s输入 'tools' 查看可用MCP工具%s\n", ColorYellow, ColorReset)
 	}
 	fmt.Printf("%s输入 'exit' 或 'quit' 退出%s\n", ColorYellow, ColorReset)
@@ -218,7 +220,7 @@ func showMCPCapabilities(mcpServers []interfaces.MCPServer) {
 	}
 
 	fmt.Printf("\n%s总计: %d个MCP服务器, %d个工具%s\n", ColorCyan, len(mcpServers), totalTools, ColorReset)
-	fmt.Printf("%s特性: LazyMCP按需连接，用时连接用完关闭%s\n", ColorGray, ColorReset)
+	fmt.Printf("%s特性: 会话级连接管理，连接复用+调用去重%s\n", ColorGray, ColorReset)
 }
 
 // showDetailedToolInfo 动态显示工具的详细信息（通用化处理）
@@ -401,82 +403,120 @@ func generateDynamicUsageExample(tool interfaces.MCPTool) {
 	}
 }
 
-// LazyMCPServer - 真正按需连接的MCP服务器包装器
-// 模拟大模型调用模式：需要时连接，用完立即关闭
-type LazyMCPServer struct {
-	baseURL string
+// SessionMCPManager - 会话级MCP连接管理器
+// 特性：连接复用 + 调用去重 + 自动清理
+type SessionMCPManager struct {
+	baseURL       string
+	connection    interfaces.MCPServer
+	callCache     map[string]*interfaces.MCPToolResponse // tool_call_id -> response缓存
+	lastActivity  time.Time                              // 最后活动时间
+	sessionActive bool                                   // 会话是否活跃
+	mutex         sync.RWMutex                           // 读写锁
 }
 
-// NewLazyMCPServer 创建延迟连接的MCP服务器
-func NewLazyMCPServer(baseURL string) *LazyMCPServer {
-	return &LazyMCPServer{
-		baseURL: baseURL,
+// NewSessionMCPManager 创建会话级MCP管理器
+func NewSessionMCPManager(baseURL string) *SessionMCPManager {
+	return &SessionMCPManager{
+		baseURL:   baseURL,
+		callCache: make(map[string]*interfaces.MCPToolResponse),
+		mutex:     sync.RWMutex{},
 	}
 }
 
-// createFreshConnection 创建新的MCP连接（每次调用独立连接）
-func (l *LazyMCPServer) createFreshConnection(ctx context.Context) (interfaces.MCPServer, error) {
-	// 使用独立的背景上下文创建连接，避免传入上下文的超时影响
-	// 这确保MCP连接不会因为调用链的超时而意外关闭
+// isConnectionAlive 检查连接是否仍然有效
+func (s *SessionMCPManager) isConnectionAlive() bool {
+	if s.connection == nil {
+		return false
+	}
+
+	// 轻量级健康检查：测试ListTools
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err := s.connection.ListTools(ctx)
+	return err == nil
+}
+
+// createNewConnection 创建新的MCP连接
+func (s *SessionMCPManager) createNewConnection(ctx context.Context) (interfaces.MCPServer, error) {
+	fmt.Printf("%s[SessionMCP] 创建新连接...%s\n", ColorGreen, ColorReset)
+
 	server, err := mcp.NewHTTPServer(context.Background(), mcp.HTTPServerConfig{
-		BaseURL: l.baseURL,
+		BaseURL: s.baseURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建MCP连接失败: %w", err)
 	}
 
+	s.connection = server
+	s.sessionActive = true
+	s.lastActivity = time.Now()
+
 	return server, nil
 }
 
-// executeWithFreshConnection 使用新连接执行操作的通用模式
-func (l *LazyMCPServer) executeWithFreshConnection(ctx context.Context, operation func(interfaces.MCPServer) (interface{}, error)) (interface{}, error) {
-	fmt.Printf("%s[LazyMCP] 创建新连接...%s\n", ColorGreen, ColorReset)
+// cleanupConnection 清理连接和相关状态
+func (s *SessionMCPManager) cleanupConnection() {
+	if s.connection != nil {
+		s.connection.Close()
+		s.connection = nil
+	}
+	s.sessionActive = false
+	s.callCache = make(map[string]*interfaces.MCPToolResponse) // 清空缓存
+	fmt.Printf("%s[SessionMCP] 连接已清理%s\n", ColorGray, ColorReset)
+}
+
+// ensureConnection 确保有活跃的MCP连接（使用时验证）
+func (s *SessionMCPManager) ensureConnection(ctx context.Context) (interfaces.MCPServer, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// 检查现有连接的有效性
+	if s.connection != nil && s.sessionActive {
+		// 时间检查：超过2分钟自动重建
+		if time.Since(s.lastActivity) > 2*time.Minute {
+			fmt.Printf("%s[SessionMCP] 连接超时(2分钟)，重建连接%s\n", ColorYellow, ColorReset)
+			s.cleanupConnection()
+		} else {
+			// 健康检查：验证连接可用性
+			if s.isConnectionAlive() {
+				s.lastActivity = time.Now()
+				fmt.Printf("%s[SessionMCP] 复用现有连接%s\n", ColorBlue, ColorReset)
+				return s.connection, nil
+			} else {
+				fmt.Printf("%s[SessionMCP] 连接失效，重建连接%s\n", ColorYellow, ColorReset)
+				s.cleanupConnection()
+			}
+		}
+	}
 
 	// 创建新连接
-	server, err := l.createFreshConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 确保连接在函数结束时立即关闭
-	defer func() {
-		fmt.Printf("%s[LazyMCP] 关闭连接...%s\n", ColorGreen, ColorReset)
-		if closeErr := server.Close(); closeErr != nil {
-			fmt.Printf("%sWarning: 关闭MCP连接失败: %v%s\n", ColorYellow, closeErr, ColorReset)
-		}
-	}()
-
-	// 执行操作（使用传入的上下文以保留调用方的超时控制）
-	result, err := operation(server)
-	if err != nil {
-		return nil, fmt.Errorf("MCP操作执行失败: %w", err)
-	}
-
-	return result, nil
+	return s.createNewConnection(ctx)
 }
 
 // Initialize 实现MCPServer接口
-func (l *LazyMCPServer) Initialize(ctx context.Context) error {
-	// 对于LazyMCP，初始化就是测试连接能力
-	_, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
-		return nil, server.Initialize(ctx)
-	})
-	return err
+func (s *SessionMCPManager) Initialize(ctx context.Context) error {
+	server, err := s.ensureConnection(ctx)
+	if err != nil {
+		return err
+	}
+	return server.Initialize(ctx)
 }
 
-// ListTools 实现MCPServer接口 - 每次调用创建新连接
-func (l *LazyMCPServer) ListTools(ctx context.Context) ([]interfaces.MCPTool, error) {
-	result, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
-		return server.ListTools(ctx)
-	})
+// ListTools 实现MCPServer接口 - 使用会话连接
+func (s *SessionMCPManager) ListTools(ctx context.Context) ([]interfaces.MCPTool, error) {
+	server, err := s.ensureConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	tools := result.([]interfaces.MCPTool)
+	tools, err := server.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// 添加详细的Schema调试输出
-	fmt.Printf("%s[LazyMCP] Schema调试信息:%s\n", ColorYellow, ColorReset)
+	fmt.Printf("%s[SessionMCP] Schema调试信息:%s\n", ColorYellow, ColorReset)
 	for i, tool := range tools {
 		fmt.Printf("%s  工具 %d: %s%s\n", ColorCyan, i+1, tool.Name, ColorReset)
 		fmt.Printf("%s    描述: %s%s\n", ColorGray, tool.Description, ColorReset)
@@ -537,14 +577,14 @@ func (l *LazyMCPServer) ListTools(ctx context.Context) ([]interfaces.MCPTool, er
 	// 转换schema格式，确保LLM能正确理解工具参数
 	convertedTools := make([]interfaces.MCPTool, len(tools))
 	for i, tool := range tools {
-		convertedTools[i] = l.convertToolSchema(tool)
+		convertedTools[i] = s.convertToolSchema(tool)
 	}
 
 	return convertedTools, nil
 }
 
 // convertToolSchema 将*jsonschema.Schema转换为标准的map格式
-func (l *LazyMCPServer) convertToolSchema(tool interfaces.MCPTool) interfaces.MCPTool {
+func (s *SessionMCPManager) convertToolSchema(tool interfaces.MCPTool) interfaces.MCPTool {
 	if tool.Schema == nil {
 		return tool
 	}
@@ -572,23 +612,67 @@ func (l *LazyMCPServer) convertToolSchema(tool interfaces.MCPTool) interfaces.MC
 	return tool
 }
 
-// CallTool 实现MCPServer接口 - 每次调用创建新连接
-func (l *LazyMCPServer) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
-	fmt.Printf("%s[LazyMCP] 调用工具: %s%s\n", ColorYellow, name, ColorReset)
+// CallTool 实现MCPServer接口 - 会话连接复用 + 调用去重（修复竞态条件）
+func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
+	// 生成调用唯一标识（用于去重）
+	callID := s.generateCallID(name, args)
 
-	result, err := l.executeWithFreshConnection(ctx, func(server interfaces.MCPServer) (interface{}, error) {
-		return server.CallTool(ctx, name, args)
-	})
+	// 使用写锁保护整个调用过程，防止竞态条件
+	s.mutex.Lock()
+
+	// 检查缓存（去重机制）
+	if cachedResponse, exists := s.callCache[callID]; exists {
+		s.mutex.Unlock()
+		fmt.Printf("%s[SessionMCP] 去重：使用缓存结果 %s (ID: %s)%s\n", ColorBlue, name, callID[:8], ColorReset)
+		return cachedResponse, nil
+	}
+
+	fmt.Printf("%s[SessionMCP] 调用工具: %s (ID: %s)%s\n", ColorYellow, name, callID[:8], ColorReset)
+
+	// 临时释放锁获取连接（避免与ensureConnection死锁）
+	s.mutex.Unlock()
+	server, err := s.ensureConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return result.(*interfaces.MCPToolResponse), nil
+
+	// 执行工具调用
+	response, err := server.CallTool(ctx, name, args)
+	if err != nil {
+		return nil, err
+	}
+
+	// 重新获取锁进行缓存操作
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// 双重检查：防止在锁释放期间其他调用已完成相同操作
+	if cachedResponse, exists := s.callCache[callID]; exists {
+		fmt.Printf("%s[SessionMCP] 去重：锁释放期间已缓存 %s (ID: %s)%s\n", ColorBlue, name, callID[:8], ColorReset)
+		return cachedResponse, nil
+	}
+
+	// 缓存结果
+	s.callCache[callID] = response
+	s.lastActivity = time.Now() // 更新活动时间
+
+	fmt.Printf("%s[SessionMCP] 工具调用完成并缓存: %s%s\n", ColorGreen, name, ColorReset)
+	return response, nil
 }
 
-// Close 实现MCPServer接口 - 对于LazyMCP，Close不需要做任何事
-func (l *LazyMCPServer) Close() error {
-	// LazyMCP每次调用后都会立即关闭连接
-	// 所以这里不需要做任何清理工作
-	fmt.Printf("%s[LazyMCP] Close调用（无需清理）%s\n", ColorGray, ColorReset)
+// generateCallID 生成调用唯一标识
+func (s *SessionMCPManager) generateCallID(name string, args interface{}) string {
+	argsJSON, _ := json.Marshal(args)
+	data := fmt.Sprintf("%s:%s", name, string(argsJSON))
+	return fmt.Sprintf("%x", data) // 简单hash
+}
+
+// Close 实现MCPServer接口 - 手动清理会话连接
+func (s *SessionMCPManager) Close() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	fmt.Printf("%s[SessionMCP] 手动关闭会话连接%s\n", ColorYellow, ColorReset)
+	s.cleanupConnection()
 	return nil
 }

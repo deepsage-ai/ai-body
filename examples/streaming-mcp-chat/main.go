@@ -404,22 +404,20 @@ func generateDynamicUsageExample(tool interfaces.MCPTool) {
 }
 
 // SessionMCPManager - 会话级MCP连接管理器
-// 特性：连接复用 + 调用去重 + 自动清理
+// 特性：连接复用 + 健康检查
 type SessionMCPManager struct {
 	baseURL       string
 	connection    interfaces.MCPServer
-	callCache     map[string]*interfaces.MCPToolResponse // tool_call_id -> response缓存
-	lastActivity  time.Time                              // 最后活动时间
-	sessionActive bool                                   // 会话是否活跃
-	mutex         sync.RWMutex                           // 读写锁
+	lastActivity  time.Time    // 最后活动时间
+	sessionActive bool         // 会话是否活跃
+	mutex         sync.RWMutex // 读写锁
 }
 
 // NewSessionMCPManager 创建会话级MCP管理器
 func NewSessionMCPManager(baseURL string) *SessionMCPManager {
 	return &SessionMCPManager{
-		baseURL:   baseURL,
-		callCache: make(map[string]*interfaces.MCPToolResponse),
-		mutex:     sync.RWMutex{},
+		baseURL: baseURL,
+		mutex:   sync.RWMutex{},
 	}
 }
 
@@ -462,7 +460,6 @@ func (s *SessionMCPManager) cleanupConnection() {
 		s.connection = nil
 	}
 	s.sessionActive = false
-	s.callCache = make(map[string]*interfaces.MCPToolResponse) // 清空缓存
 	fmt.Printf("%s[SessionMCP] 连接已清理%s\n", ColorGray, ColorReset)
 }
 
@@ -612,25 +609,11 @@ func (s *SessionMCPManager) convertToolSchema(tool interfaces.MCPTool) interface
 	return tool
 }
 
-// CallTool 实现MCPServer接口 - 会话连接复用 + 调用去重（修复竞态条件）
+// CallTool 实现MCPServer接口 - 会话连接复用（无缓存）
 func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
-	// 生成调用唯一标识（用于去重）
-	callID := s.generateCallID(name, args)
+	fmt.Printf("%s[SessionMCP] 调用工具: %s%s\n", ColorYellow, name, ColorReset)
 
-	// 使用写锁保护整个调用过程，防止竞态条件
-	s.mutex.Lock()
-
-	// 检查缓存（去重机制）
-	if cachedResponse, exists := s.callCache[callID]; exists {
-		s.mutex.Unlock()
-		fmt.Printf("%s[SessionMCP] 去重：使用缓存结果 %s (ID: %s)%s\n", ColorBlue, name, callID[:8], ColorReset)
-		return cachedResponse, nil
-	}
-
-	fmt.Printf("%s[SessionMCP] 调用工具: %s (ID: %s)%s\n", ColorYellow, name, callID[:8], ColorReset)
-
-	// 临时释放锁获取连接（避免与ensureConnection死锁）
-	s.mutex.Unlock()
+	// 获取会话连接
 	server, err := s.ensureConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -642,29 +625,13 @@ func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args inte
 		return nil, err
 	}
 
-	// 重新获取锁进行缓存操作
+	// 更新活动时间
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.lastActivity = time.Now()
+	s.mutex.Unlock()
 
-	// 双重检查：防止在锁释放期间其他调用已完成相同操作
-	if cachedResponse, exists := s.callCache[callID]; exists {
-		fmt.Printf("%s[SessionMCP] 去重：锁释放期间已缓存 %s (ID: %s)%s\n", ColorBlue, name, callID[:8], ColorReset)
-		return cachedResponse, nil
-	}
-
-	// 缓存结果
-	s.callCache[callID] = response
-	s.lastActivity = time.Now() // 更新活动时间
-
-	fmt.Printf("%s[SessionMCP] 工具调用完成并缓存: %s%s\n", ColorGreen, name, ColorReset)
+	fmt.Printf("%s[SessionMCP] 工具调用完成: %s%s\n", ColorGreen, name, ColorReset)
 	return response, nil
-}
-
-// generateCallID 生成调用唯一标识
-func (s *SessionMCPManager) generateCallID(name string, args interface{}) string {
-	argsJSON, _ := json.Marshal(args)
-	data := fmt.Sprintf("%s:%s", name, string(argsJSON))
-	return fmt.Sprintf("%x", data) // 简单hash
 }
 
 // Close 实现MCPServer接口 - 手动清理会话连接

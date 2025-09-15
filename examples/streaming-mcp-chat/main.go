@@ -512,65 +512,6 @@ func (s *SessionMCPManager) ListTools(ctx context.Context) ([]interfaces.MCPTool
 		return nil, err
 	}
 
-	// 添加详细的Schema调试输出
-	fmt.Printf("%s[SessionMCP] Schema调试信息:%s\n", ColorYellow, ColorReset)
-	for i, tool := range tools {
-		fmt.Printf("%s  工具 %d: %s%s\n", ColorCyan, i+1, tool.Name, ColorReset)
-		fmt.Printf("%s    描述: %s%s\n", ColorGray, tool.Description, ColorReset)
-
-		if tool.Schema != nil {
-			fmt.Printf("%s    Schema存在: %T%s\n", ColorGreen, tool.Schema, ColorReset)
-
-			// 处理*jsonschema.Schema类型
-			schemaStr := fmt.Sprintf("%v", tool.Schema)
-			if strings.Contains(schemaStr, "<anonymous schema>") {
-				fmt.Printf("%s    ⚠️ Schema信息被隐藏，尝试JSON序列化...%s\n", ColorYellow, ColorReset)
-
-				// 尝试将schema转换为JSON来查看其内容
-				if schemaBytes, err := json.Marshal(tool.Schema); err == nil {
-					var schemaMap map[string]interface{}
-					if err := json.Unmarshal(schemaBytes, &schemaMap); err == nil {
-						fmt.Printf("%s    JSON序列化成功:%s\n", ColorGreen, ColorReset)
-
-						if properties, exists := schemaMap["properties"]; exists {
-							fmt.Printf("%s    参数定义: %+v%s\n", ColorBlue, properties, ColorReset)
-						}
-
-						if required, exists := schemaMap["required"]; exists {
-							fmt.Printf("%s    必需参数: %+v%s\n", ColorGreen, required, ColorReset)
-						}
-
-						if schemaType, exists := schemaMap["type"]; exists {
-							fmt.Printf("%s    Schema类型: %+v%s\n", ColorCyan, schemaType, ColorReset)
-						}
-					} else {
-						fmt.Printf("%s    JSON反序列化失败: %v%s\n", ColorRed, err, ColorReset)
-					}
-				} else {
-					fmt.Printf("%s    JSON序列化失败: %v%s\n", ColorRed, err, ColorReset)
-				}
-			} else {
-				// 尝试直接作为map处理
-				if schemaMap, ok := tool.Schema.(map[string]interface{}); ok {
-					if properties, exists := schemaMap["properties"]; exists {
-						fmt.Printf("%s    参数定义: %+v%s\n", ColorBlue, properties, ColorReset)
-					} else {
-						fmt.Printf("%s    ⚠️ 缺少properties字段%s\n", ColorYellow, ColorReset)
-					}
-
-					if required, exists := schemaMap["required"]; exists {
-						fmt.Printf("%s    必需参数: %+v%s\n", ColorGreen, required, ColorReset)
-					}
-				} else {
-					fmt.Printf("%s    ⚠️ Schema格式异常: %+v%s\n", ColorRed, tool.Schema, ColorReset)
-				}
-			}
-		} else {
-			fmt.Printf("%s    ❌ Schema为空%s\n", ColorRed, ColorReset)
-		}
-		fmt.Println()
-	}
-
 	// 转换schema格式，确保LLM能正确理解工具参数
 	convertedTools := make([]interfaces.MCPTool, len(tools))
 	for i, tool := range tools {
@@ -590,19 +531,13 @@ func (s *SessionMCPManager) convertToolSchema(tool interfaces.MCPTool) interface
 	if schemaBytes, err := json.Marshal(tool.Schema); err == nil {
 		var schemaMap map[string]interface{}
 		if err := json.Unmarshal(schemaBytes, &schemaMap); err == nil {
-			fmt.Printf("%s[Schema转换] %s: 成功转换为标准格式%s\n", ColorGreen, tool.Name, ColorReset)
-
 			// 创建新的工具对象，使用转换后的schema
 			return interfaces.MCPTool{
 				Name:        tool.Name,
 				Description: tool.Description,
 				Schema:      schemaMap, // 使用转换后的map格式
 			}
-		} else {
-			fmt.Printf("%s[Schema转换] %s: JSON反序列化失败: %v%s\n", ColorRed, tool.Name, err, ColorReset)
 		}
-	} else {
-		fmt.Printf("%s[Schema转换] %s: JSON序列化失败: %v%s\n", ColorRed, tool.Name, err, ColorReset)
 	}
 
 	// 如果转换失败，返回原始工具

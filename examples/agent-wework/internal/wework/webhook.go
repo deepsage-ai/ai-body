@@ -1,15 +1,29 @@
 package wework
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sbzhu/weworkapi_golang/wxbizmsgcrypt"
 )
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// EncryptedRequest 企业微信加密请求结构（JSON格式）
+type EncryptedRequest struct {
+	Encrypt string `json:"encrypt"`
+}
 
 // MessageHandler 消息处理器接口
 type MessageHandler interface {
@@ -19,7 +33,8 @@ type MessageHandler interface {
 
 // WebhookHandler Webhook处理器
 type WebhookHandler struct {
-	crypto     *Crypto
+	wxcpt      *wxbizmsgcrypt.WXBizMsgCrypt // 官方加解密库
+	botID      string                       // 机器人ID
 	handler    MessageHandler
 	msgCache   map[string]time.Time // 消息去重缓存
 	cacheMutex sync.RWMutex         // 缓存锁
@@ -27,14 +42,13 @@ type WebhookHandler struct {
 }
 
 // NewWebhookHandler 创建Webhook处理器
-func NewWebhookHandler(token, aesKey string, handler MessageHandler) (*WebhookHandler, error) {
-	crypto, err := NewCrypto(token, aesKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create crypto: %w", err)
-	}
+func NewWebhookHandler(token, aesKey, botID string, handler MessageHandler) (*WebhookHandler, error) {
+	// 使用官方SDK，智能机器人场景receiverId使用空字符串（参照官方文档）
+	wxcpt := wxbizmsgcrypt.NewWXBizMsgCrypt(token, aesKey, "", wxbizmsgcrypt.XmlType)
 
 	return &WebhookHandler{
-		crypto:    crypto,
+		wxcpt:     wxcpt,
+		botID:     botID,
 		handler:   handler,
 		msgCache:  make(map[string]time.Time),
 		cacheSize: 1000, // 缓存1000条消息用于去重
@@ -55,16 +69,11 @@ func (w *WebhookHandler) HandleWebhook(c *gin.Context) {
 
 // handleVerification 处理URL验证（GET请求）
 func (w *WebhookHandler) handleVerification(c *gin.Context) {
-	// 获取查询参数并进行URL解码
+	// 获取查询参数（Gin已自动URL解码）
 	signature := c.Query("msg_signature")
 	timestamp := c.Query("timestamp")
 	nonce := c.Query("nonce")
 	echostr := c.Query("echostr")
-
-	// URL解码处理
-	if decodedEchostr, err := url.QueryUnescape(echostr); err == nil {
-		echostr = decodedEchostr
-	}
 
 	if signature == "" || timestamp == "" || nonce == "" || echostr == "" {
 		fmt.Printf("❌ URL验证失败: 缺少必要参数\n")
@@ -72,19 +81,19 @@ func (w *WebhookHandler) handleVerification(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("🔍 URL验证请求: signature=%s, timestamp=%s, nonce=%s\n",
-		signature[:8]+"...", timestamp, nonce[:8]+"...")
+	fmt.Printf("🔍 URL验证请求: signature=%s..., timestamp=%s, nonce=%s...\n",
+		signature[:8], timestamp, nonce[:8])
 
-	// 验证并解密echostr
-	decrypted, err := w.crypto.VerifyURL(signature, timestamp, nonce, echostr)
-	if err != nil {
-		fmt.Printf("❌ URL验证失败: %v\n", err)
+	// 使用官方SDK进行验证（参照官方示例）
+	echoStr, cryptErr := w.wxcpt.VerifyURL(signature, timestamp, nonce, echostr)
+	if nil != cryptErr {
+		fmt.Printf("❌ URL验证失败: %v\n", cryptErr)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Verification failed"})
 		return
 	}
 
 	fmt.Printf("✅ URL验证成功\n")
-	c.String(http.StatusOK, decrypted)
+	c.String(http.StatusOK, string(echoStr))
 }
 
 // handleMessage 处理消息（POST请求）
@@ -107,23 +116,30 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 		return
 	}
 
-	// 解析加密的XML
-	encReq, err := ParseEncryptedXML(body)
-	if err != nil {
-		fmt.Printf("❌ 解析XML失败: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid XML format"})
+	// 解析JSON格式的加密请求（智能机器人使用JSON格式）
+	var encReq EncryptedRequest
+	if err := json.Unmarshal(body, &encReq); err != nil {
+		fmt.Printf("❌ JSON解析失败: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
 		return
 	}
 
-	// 解密消息
-	decryptedData, err := w.crypto.DecryptMessage(signature, timestamp, nonce, encReq.Encrypt)
-	if err != nil {
-		fmt.Printf("❌ 消息解密失败: %v\n", err)
+	fmt.Printf("🔍 接收到加密消息，encrypt字段长度: %d\n", len(encReq.Encrypt))
+
+	// 构造XML格式传给官方SDK（ToUserName使用BotID）
+	xmlData := fmt.Sprintf(`<xml><ToUserName><![CDATA[%s]]></ToUserName><Encrypt><![CDATA[%s]]></Encrypt></xml>`, w.botID, encReq.Encrypt)
+
+	// 使用官方SDK解密消息
+	decryptedData, cryptErr := w.wxcpt.DecryptMsg(signature, timestamp, nonce, []byte(xmlData))
+	if nil != cryptErr {
+		fmt.Printf("❌ 消息解密失败: %v\n", cryptErr)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Decryption failed"})
 		return
 	}
 
-	// 解析消息
+	fmt.Printf("✅ 消息解密成功，解密后内容: %s\n", string(decryptedData))
+
+	// 解析JSON格式的解密消息
 	msg, err := ParseMessage(decryptedData)
 	if err != nil {
 		fmt.Printf("❌ 消息解析失败: %v\n", err)
@@ -183,10 +199,10 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 		return
 	}
 
-	// 加密响应
-	encryptedResp, err := w.crypto.EncryptMessage(responseData, timestamp, nonce)
-	if err != nil {
-		fmt.Printf("❌ 响应加密失败: %v\n", err)
+	// 使用官方SDK加密响应（参照官方示例）
+	encryptedResp, cryptErr := w.wxcpt.EncryptMsg(string(responseData), timestamp, nonce)
+	if nil != cryptErr {
+		fmt.Printf("❌ 响应加密失败: %v\n", cryptErr)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Response encryption failed"})
 		return
 	}
@@ -194,7 +210,7 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 	fmt.Printf("✅ 发送加密响应: type=%s\n", response.MsgType)
 
 	c.Header("Content-Type", "application/xml")
-	c.String(http.StatusOK, encryptedResp)
+	c.String(http.StatusOK, string(encryptedResp))
 }
 
 // isDuplicateMessage 检查是否为重复消息

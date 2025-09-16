@@ -7,6 +7,7 @@ type WeWorkConfig struct {
 	// 企业微信配置（已预设）
 	Token  string
 	AESKey string
+	BotID  string
 
 	// 千问API配置（需要设置）
 	QwenAPIKey  string
@@ -24,6 +25,7 @@ type WeWorkConfig struct {
 const (
 	WEWORK_TOKEN   = "LYDMxF6qKEPWVGdKaQdAYw9xxfSzDsIC"
 	WEWORK_AES_KEY = "f4gfCYzaqGAfh4rqxWjqG9udsZwI0d3uRlx5cXVUgDu"
+	WEWORK_BOT_ID  = "aibNFPh36tB2I_wrYlPhlPyOY_fQavVb3mc" // 企业微信机器人ID
 
 	// 千问API配置（复用qwen-http版本的密钥）
 	DEFAULT_QWEN_API_KEY  = "sk-0d8bebab081044f682fbeb6c147d8f2c" // 千问API密钥
@@ -43,6 +45,7 @@ func LoadConfig() (*WeWorkConfig, error) {
 		// 企业微信配置（已预设）
 		Token:  WEWORK_TOKEN,
 		AESKey: WEWORK_AES_KEY,
+		BotID:  WEWORK_BOT_ID,
 
 		// 千问API配置
 		QwenAPIKey:  DEFAULT_QWEN_API_KEY,

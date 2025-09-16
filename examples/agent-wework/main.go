@@ -24,8 +24,8 @@ func main() {
 	}
 
 	// 显示配置信息（掩码敏感信息）
-	fmt.Printf("📋 企业微信配置: Token=%s, AESKey=%s\n",
-		cfg.MaskSecret(cfg.Token), cfg.MaskSecret(cfg.AESKey))
+	fmt.Printf("📋 企业微信配置: Token=%s, AESKey=%s, BotID=%s\n",
+		cfg.MaskSecret(cfg.Token), cfg.MaskSecret(cfg.AESKey), cfg.MaskSecret(cfg.BotID))
 	fmt.Printf("🤖 千问配置: Model=%s, BaseURL=%s\n",
 		cfg.QwenModel, cfg.QwenBaseURL)
 	fmt.Printf("🔧 MCP服务器: %s\n", cfg.MCPServerURL)
@@ -44,6 +44,7 @@ func main() {
 	webhookHandler, err := wework.NewWebhookHandler(
 		cfg.Token,
 		cfg.AESKey,
+		cfg.BotID,
 		botHandler,
 	)
 	if err != nil {
@@ -88,6 +89,7 @@ func main() {
 	fmt.Printf("\n🔧 预设配置:\n")
 	fmt.Printf("   Token: %s\n", cfg.MaskSecret(cfg.Token))
 	fmt.Printf("   AESKey: %s\n", cfg.MaskSecret(cfg.AESKey))
+	fmt.Printf("   BotID: %s\n", cfg.MaskSecret(cfg.BotID))
 
 	fmt.Println("\n🎯 核心特性:")
 	fmt.Println("✅ 企业微信原生流式传输")

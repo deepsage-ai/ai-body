@@ -39,6 +39,7 @@ require (
 	github.com/openai/openai-go/v2 v2.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
+	github.com/sbzhu/weworkapi_golang v0.0.0-20250808123004-7e1b55d1e17e // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

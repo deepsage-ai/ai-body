@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI-Body 是一个基于 Go 语言和 agent-sdk-go 框架的智能对话系统。项目已有完整的示例实现，展示了 MCP (Model Context Protocol) 客户端集成和流式对话的核心技术。
 
-**当前状态**: 项目拥有两个完整可运行的示例实现，实现了会话级连接管理等关键技术突破。
+**当前状态**: 项目拥有三个完整可运行的示例实现，实现了会话级连接管理等关键技术突破。
 
 ## 实现架构
 
-项目包含两个完整的示例实现：
+项目包含三个完整的示例实现：
 
 ### 1. streaming-mcp-chat (Ollama版本)
 - **LLM支持**: Ollama qwen3:32b 模型
@@ -21,6 +21,11 @@ AI-Body 是一个基于 Go 语言和 agent-sdk-go 框架的智能对话系统。
 - **LLM支持**: Claude Sonnet 4 (最新模型)
 - **连接方式**: Anthropic API
 - **特性**: 原生思维链支持，更强推理能力
+
+### 3. streaming-mcp-chat-qwen (千问版本)
+- **LLM支持**: qwen-max (千问最强模型)
+- **连接方式**: DashScope兼容接口
+- **特性**: 云端部署，开箱即用，中文优化
 
 ### 核心技术组件
 

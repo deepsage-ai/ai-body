@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,20 +22,111 @@ import (
 	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/wework"
 )
 
-// === 任务缓存管理器 - 模拟Python LLMDemo类 ===
+// === 真正的流式传输架构 - 生产者消费者模式 ===
 
-// TaskInfo 任务信息
+// StreamBuffer 流式内容缓冲区 - 实现生产者(AI)消费者(企业微信)模式
+type StreamBuffer struct {
+	chunks     []string     // 待消费的内容块队列
+	mutex      sync.RWMutex // 线程安全锁
+	aiFinished bool         // AI是否完成生成
+	lastUpdate time.Time    // 最后更新时间
+}
+
+// NewStreamBuffer 创建流式缓冲区
+func NewStreamBuffer() *StreamBuffer {
+	return &StreamBuffer{
+		chunks:     make([]string, 0),
+		lastUpdate: time.Now(),
+	}
+}
+
+// Push AI生产内容到缓冲区
+func (sb *StreamBuffer) Push(content string) {
+	if content == "" {
+		return
+	}
+
+	sb.mutex.Lock()
+	defer sb.mutex.Unlock()
+
+	sb.chunks = append(sb.chunks, content)
+	sb.lastUpdate = time.Now()
+
+	fmt.Printf("📦 AI生产内容: 长度=%d, 队列大小=%d\n", len(content), len(sb.chunks))
+}
+
+// Consume 企业微信消费缓冲区内容
+func (sb *StreamBuffer) Consume() (string, bool) {
+	sb.mutex.Lock()
+	defer sb.mutex.Unlock()
+
+	if len(sb.chunks) > 0 {
+		// 有新内容，消费第一块
+		content := sb.chunks[0]
+		sb.chunks = sb.chunks[1:]
+		sb.lastUpdate = time.Now()
+
+		fmt.Printf("🍽️ 企业微信消费内容: 长度=%d, 剩余队列=%d\n", len(content), len(sb.chunks))
+		return content, false // 有内容，未完成
+	}
+
+	// 无新内容，检查AI是否完成
+	isFinished := sb.aiFinished
+
+	fmt.Printf("🔍 无新内容: AI完成=%v\n", isFinished)
+	return "", isFinished // 无内容，返回完成状态
+}
+
+// SetAIFinished 标记AI完成生成
+func (sb *StreamBuffer) SetAIFinished() {
+	sb.mutex.Lock()
+	defer sb.mutex.Unlock()
+
+	sb.aiFinished = true
+	sb.lastUpdate = time.Now()
+
+	fmt.Printf("✅ AI标记完成: 剩余队列=%d\n", len(sb.chunks))
+}
+
+// IsEmpty 检查缓冲区是否为空
+func (sb *StreamBuffer) IsEmpty() bool {
+	sb.mutex.RLock()
+	defer sb.mutex.RUnlock()
+
+	return len(sb.chunks) == 0
+}
+
+// IsAIFinished 检查AI是否完成
+func (sb *StreamBuffer) IsAIFinished() bool {
+	sb.mutex.RLock()
+	defer sb.mutex.RUnlock()
+
+	return sb.aiFinished
+}
+
+// GetStatus 获取缓冲区状态（用于调试）
+func (sb *StreamBuffer) GetStatus() (queueSize int, aiFinished bool) {
+	sb.mutex.RLock()
+	defer sb.mutex.RUnlock()
+
+	return len(sb.chunks), sb.aiFinished
+}
+
+// TaskInfo 任务信息 - 基于StreamBuffer的真正流式架构
 type TaskInfo struct {
-	StreamID     string          `json:"stream_id"`
-	Question     string          `json:"question"`
-	CreatedTime  time.Time       `json:"created_time"`
-	CurrentStep  int             `json:"current_step"`
-	MaxSteps     int             `json:"max_steps"`
-	Content      strings.Builder `json:"-"`             // 累积内容
-	IsProcessing bool            `json:"is_processing"` // AI是否正在处理
-	IsFinished   bool            `json:"is_finished"`   // 是否已完成
-	LastUpdate   time.Time       `json:"last_update"`
-	mutex        sync.RWMutex    `json:"-"`
+	StreamID     string        `json:"stream_id"`
+	Question     string        `json:"question"`
+	CreatedTime  time.Time     `json:"created_time"`
+	Buffer       *StreamBuffer `json:"-"`             // 流式缓冲区（替换累积内容）
+	IsProcessing bool          `json:"is_processing"` // AI是否正在处理
+	LastUpdate   time.Time     `json:"last_update"`
+	mutex        sync.RWMutex  `json:"-"`
+
+	// ❌ 已移除的累积模式字段：
+	// CurrentStep  int             - 不再需要固定步数
+	// MaxSteps     int             - 不再需要最大步数限制
+	// Content      strings.Builder - 不再累积内容，改为缓冲区
+	// IsFinished   bool            - 通过Buffer.IsAIFinished()获取
 }
 
 // TaskCacheManager 任务缓存管理器 - 模拟Python LLMDemo
@@ -91,15 +181,13 @@ func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (strin
 		return "", fmt.Errorf("生成任务ID失败: %w", err)
 	}
 
-	// 创建任务信息
+	// 创建任务信息 - 基于StreamBuffer的真正流式架构
 	task := &TaskInfo{
 		StreamID:     streamID,
 		Question:     question,
 		CreatedTime:  time.Now(),
-		CurrentStep:  0,
-		MaxSteps:     10, // 模拟Python的MAX_STEPS = 10
+		Buffer:       NewStreamBuffer(), // ✅ 创建流式缓冲区
 		IsProcessing: false,
-		IsFinished:   false,
 		LastUpdate:   time.Now(),
 	}
 
@@ -144,37 +232,44 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	if err != nil {
 		fmt.Printf("❌ Agent运行失败: streamID=%s, error=%v\n", streamID, err)
 
+		// 推送错误信息到缓冲区
+		errorMsg := fmt.Sprintf("处理失败: %v", err)
+		task.Buffer.Push(errorMsg)
+		task.Buffer.SetAIFinished() // 标记AI完成（错误情况）
+
 		task.mutex.Lock()
 		task.IsProcessing = false
-		task.IsFinished = true
-		task.Content.WriteString(fmt.Sprintf("处理失败: %v", err))
 		task.LastUpdate = time.Now()
 		task.mutex.Unlock()
 		return
 	}
 
-	// 接收并累积AI事件流
+	// ✅ 关键改造：从累积模式改为推送模式
+	// AI生成内容实时推送到StreamBuffer，供企业微信消费
 	for event := range events {
-		task.mutex.Lock()
 		if event.Content != "" {
-			task.Content.WriteString(event.Content)
+			// 推送到缓冲区（生产者模式）
+			task.Buffer.Push(event.Content)
+
+			task.mutex.Lock()
 			task.LastUpdate = time.Now()
+			task.mutex.Unlock()
 		}
-		task.mutex.Unlock()
 	}
 
-	// AI处理完成
+	// AI处理完成，标记缓冲区状态
 	task.mutex.Lock()
 	task.IsProcessing = false
-	task.IsFinished = true
-	task.CurrentStep = task.MaxSteps // 设置为最大步数表示完成
 	task.LastUpdate = time.Now()
 	task.mutex.Unlock()
+
+	// ✅ 标记AI完成生成（但可能还有内容在缓冲区等待消费）
+	task.Buffer.SetAIFinished()
 
 	fmt.Printf("✅ AI处理完成: streamID=%s\n", streamID)
 }
 
-// GetAnswer 获取当前答案 - 模拟Python LLMDemo.get_answer()
+// GetAnswer 获取当前答案 - 真正的流式消费模式
 func (tcm *TaskCacheManager) GetAnswer(streamID string) string {
 	tcm.mutex.RLock()
 	task, exists := tcm.tasks[streamID]
@@ -184,42 +279,24 @@ func (tcm *TaskCacheManager) GetAnswer(streamID string) string {
 		return "任务不存在或已过期"
 	}
 
+	// ✅ 核心改造：从Buffer消费新内容（消费者模式）
+	newContent, isFinished := task.Buffer.Consume()
+
+	// 更新任务状态
 	task.mutex.Lock()
-	defer task.mutex.Unlock()
+	task.LastUpdate = time.Now()
+	task.mutex.Unlock()
 
-	// 更新步数（模拟Python的递增逻辑）
-	if !task.IsFinished && task.CurrentStep < task.MaxSteps {
-		task.CurrentStep++
-		task.LastUpdate = time.Now()
-	}
+	// 调试信息
+	queueSize, aiFinished := task.Buffer.GetStatus()
+	fmt.Printf("📊 消费结果: streamID=%s, 新内容长度=%d, AI完成=%v, 队列剩余=%d, 任务完成=%v\n",
+		streamID, len(newContent), aiFinished, queueSize, isFinished)
 
-	// 构造返回内容（模拟Python的格式）
-	response := fmt.Sprintf("收到问题：%s\n\n", task.Question)
-
-	// 如果AI还在处理，显示进度
-	if task.IsProcessing && task.Content.Len() == 0 {
-		for i := 0; i < task.CurrentStep; i++ {
-			response += fmt.Sprintf("处理步骤 %d: 准备中...\n", i+1)
-		}
-	} else {
-		// AI有内容输出，显示实际内容
-		if task.Content.Len() > 0 {
-			response += "AI回复:\n" + task.Content.String()
-		} else {
-			// 还没有内容，显示进度
-			for i := 0; i < task.CurrentStep; i++ {
-				response += fmt.Sprintf("处理步骤 %d: 已完成\n", i+1)
-			}
-		}
-	}
-
-	fmt.Printf("📊 获取答案: streamID=%s, step=%d/%d, 内容长度=%d\n",
-		streamID, task.CurrentStep, task.MaxSteps, len(response))
-
-	return response
+	// ✅ 关键：只返回新增内容，不返回历史累积内容
+	return newContent
 }
 
-// IsTaskFinish 检查任务是否完成 - 模拟Python LLMDemo.is_task_finish()
+// IsTaskFinish 检查任务是否完成 - 基于StreamBuffer的真正流式架构
 func (tcm *TaskCacheManager) IsTaskFinish(streamID string) bool {
 	tcm.mutex.RLock()
 	task, exists := tcm.tasks[streamID]
@@ -232,16 +309,16 @@ func (tcm *TaskCacheManager) IsTaskFinish(streamID string) bool {
 	task.mutex.RLock()
 	defer task.mutex.RUnlock()
 
-	// 满足以下条件之一视为完成：
-	// 1. 明确标记为已完成
-	// 2. 步数达到最大值
-	// 3. AI处理完成且有内容输出
-	isFinished := task.IsFinished ||
-		task.CurrentStep >= task.MaxSteps ||
-		(!task.IsProcessing && task.Content.Len() > 0)
+	// ✅ 新逻辑：AI完成且缓冲区为空才算真正完成
+	// 这确保了所有生成的内容都被企业微信消费完毕
+	aiFinished := !task.IsProcessing && task.Buffer.IsAIFinished()
+	bufferEmpty := task.Buffer.IsEmpty()
+	isFinished := aiFinished && bufferEmpty
 
-	fmt.Printf("🔍 检查任务完成状态: streamID=%s, finished=%v, step=%d/%d, processing=%v\n",
-		streamID, isFinished, task.CurrentStep, task.MaxSteps, task.IsProcessing)
+	// 获取缓冲区状态用于调试
+	queueSize, aiComplete := task.Buffer.GetStatus()
+	fmt.Printf("🔍 检查任务完成状态: streamID=%s, finished=%v, processing=%v, aiComplete=%v, queueSize=%d\n",
+		streamID, isFinished, task.IsProcessing, aiComplete, queueSize)
 
 	return isFinished
 }
@@ -385,8 +462,15 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 3. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
 	finish := b.taskCache.IsTaskFinish(streamID)
 
-	fmt.Printf("📡 返回stream消息: streamID=%s, finish=%v, 内容长度=%d\n",
-		streamID, finish, len(answer))
+	// ✅ 优化返回策略：首次必须有内容，即使AI还在处理中
+	if answer == "" && !finish {
+		// 如果没有内容且未完成，返回处理中提示
+		answer = "正在为您思考中..."
+		fmt.Printf("📡 首次返回处理中提示: streamID=%s\n", streamID)
+	} else {
+		fmt.Printf("📡 首次返回内容: streamID=%s, finish=%v, 内容长度=%d\n",
+			streamID, finish, len(answer))
+	}
 
 	// 4. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 关键：finish=false时企业微信会发送刷新请求！
@@ -406,8 +490,18 @@ func (b *BotHandler) HandleStreamRefresh(streamID string) (*wework.WeWorkRespons
 	// 2. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
 	finish := b.taskCache.IsTaskFinish(streamID)
 
-	fmt.Printf("📡 stream刷新结果: streamID=%s, finish=%v, 内容长度=%d\n",
-		streamID, finish, len(answer))
+	// ✅ 优化返回策略：处理空内容情况
+	if answer == "" && !finish {
+		// 无新内容且未完成，返回空内容（企业微信会继续轮询）
+		fmt.Printf("📡 stream刷新无新内容: streamID=%s, 继续等待AI生成\n", streamID)
+	} else if answer == "" && finish {
+		// 无新内容且已完成，任务结束
+		fmt.Printf("📡 stream刷新完成: streamID=%s, AI处理结束\n", streamID)
+	} else {
+		// 有新内容
+		fmt.Printf("📡 stream刷新有新内容: streamID=%s, finish=%v, 内容长度=%d\n",
+			streamID, finish, len(answer))
+	}
 
 	// 3. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 继续返回，直到finish=true为止
@@ -426,7 +520,12 @@ func (b *BotHandler) GetActiveStreamCount() int {
 	count := 0
 	for _, task := range b.taskCache.tasks {
 		task.mutex.RLock()
-		if !task.IsFinished {
+		// 使用新的完成状态检查逻辑
+		isProcessing := task.IsProcessing
+		aiFinished := task.Buffer.IsAIFinished()
+		bufferEmpty := task.Buffer.IsEmpty()
+		isActive := isProcessing || !aiFinished || !bufferEmpty
+		if isActive {
 			count++
 		}
 		task.mutex.RUnlock()

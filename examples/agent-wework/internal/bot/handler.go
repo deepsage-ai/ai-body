@@ -53,11 +53,6 @@ func (sb *StreamBuffer) Push(content string) {
 
 	sb.chunks = append(sb.chunks, content)
 	sb.lastUpdate = time.Now()
-
-	// 调试：输出推送的内容长度
-	if len(sb.chunks) <= 3 || strings.Contains(content, "我是") {
-		fmt.Printf("📝 推送第 %d 块内容 (长度: %d): %.50s...\n", len(sb.chunks), len(content), content)
-	}
 }
 
 // GetAccumulated 获取累积内容（严格按照Python的get_answer逻辑）
@@ -287,13 +282,8 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 		// 检查metadata中的final_call标记
 		var isFinalCall bool
 		if event.Metadata != nil {
-			// 调试：打印metadata内容
-			if len(event.Metadata) > 0 {
-				fmt.Printf("🔍 Event Metadata: %+v\n", event.Metadata)
-			}
 			if fc, ok := event.Metadata["final_call"].(bool); ok && fc {
 				isFinalCall = true
-				fmt.Printf("⚠️ 检测到final call标记\n")
 			}
 		}
 
@@ -303,7 +293,6 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 			// ✨ Final Call内容过滤策略
 			// 1. 如果检测到final_call标记，过滤
 			if isFinalCall {
-				fmt.Printf("🛑 过滤final call内容: %.50s...\n", event.Content)
 				continue
 			}
 
@@ -339,9 +328,6 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 			task.mutex.Unlock()
 		}
 	}
-
-	// 输出统计信息
-	fmt.Printf("📊 任务 %s 完成: 检测到 %d 次模型调用, 共 %d 个内容块\n", streamID, callCount, chunkCount)
 
 	// AI处理完成，标记缓冲区状态
 	task.mutex.Lock()

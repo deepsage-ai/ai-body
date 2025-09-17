@@ -171,9 +171,6 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 		return
 	}
 
-	// 调试：打印实际发送的JSON格式
-	fmt.Printf("🔍 发送给企业微信的JSON: %s\n", string(responseData))
-
 	// 使用我们自己的加解密库加密响应（严格按照Python逻辑）
 	// Python: EncryptMsg(sReplyMsg, sNonce, timestamp)
 	ret, encryptedResp, err := w.wxcpt.EncryptMsg(string(responseData), nonce, &timestamp)

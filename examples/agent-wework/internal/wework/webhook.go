@@ -66,23 +66,22 @@ func (w *WebhookHandler) handleVerification(c *gin.Context) {
 	echostr := c.Query("echostr")
 
 	if signature == "" || timestamp == "" || nonce == "" || echostr == "" {
-		fmt.Printf("❌ URL验证失败: 缺少必要参数\n")
+		// URL验证失败: 缺少必要参数
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required parameters"})
 		return
 	}
 
-	fmt.Printf("🔍 URL验证请求: signature=%s..., timestamp=%s, nonce=%s...\n",
-		signature[:8], timestamp, nonce[:8])
+	// URL验证请求
 
 	// 使用我们自己的加解密库进行验证（严格按照Python逻辑）
 	ret, echoStr, err := w.wxcpt.VerifyURL(signature, timestamp, nonce, echostr)
 	if ret != WXBizMsgCrypt_OK || err != nil {
-		fmt.Printf("❌ URL验证失败: ret=%d, error=%v\n", ret, err)
+		// URL验证失败
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Verification failed"})
 		return
 	}
 
-	fmt.Printf("✅ URL验证成功\n")
+	// URL验证成功
 	c.String(http.StatusOK, echoStr)
 }
 
@@ -93,7 +92,7 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 	nonce := c.Query("nonce")
 
 	if signature == "" || timestamp == "" || nonce == "" {
-		fmt.Printf("❌ 消息处理失败: 缺少必要参数\n")
+		// 消息处理失败: 缺少必要参数
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required parameters"})
 		return
 	}
@@ -101,67 +100,37 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 	// 读取请求体
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		fmt.Printf("❌ 读取请求体失败: %v\n", err)
+		// 读取请求体失败
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
 		return
 	}
-
-	fmt.Printf("🔍 接收到加密消息，body长度: %d\n", len(body))
-	fmt.Printf("🔍 原始请求体内容: %s\n", string(body))
 
 	// 使用我们自己的加解密库解密消息（严格按照Python逻辑）
 	// 直接传递原始JSON格式给解密函数
 	ret, decryptedContent, err := w.wxcpt.DecryptMsg(string(body), signature, timestamp, nonce)
 	if ret != WXBizMsgCrypt_OK || err != nil {
-		fmt.Printf("❌ 消息解密失败: ret=%d, error=%v\n", ret, err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Decryption failed"})
 		return
 	}
-
-	fmt.Printf("✅ 消息解密成功，解密后内容: %s\n", decryptedContent)
-	fmt.Printf("🔍 原始解密数据长度: %d 字节\n", len(decryptedContent))
-	fmt.Printf("🔍 原始解密数据详情:\n%s\n", decryptedContent)
-	fmt.Printf("=====================================\n")
 
 	decryptedData := []byte(decryptedContent)
 
 	// 解析JSON格式的解密消息
 	msg, err := ParseMessage(decryptedData)
 	if err != nil {
-		fmt.Printf("❌ 消息解析失败: %v\n", err)
+		// 消息解析失败
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid message format"})
 		return
 	}
 
 	// 消息去重检查
 	if w.isDuplicateMessage(msg.MsgID) {
-		fmt.Printf("🔄 重复消息忽略: %s\n", msg.MsgID)
 		c.String(http.StatusOK, "success") // 企业微信期望返回success
 		return
 	}
 
 	// 记录消息用于去重
 	w.recordMessage(msg.MsgID)
-
-	fmt.Printf("📨 收到消息: type=%s, from=%s, msgid=%s\n",
-		msg.MsgType, msg.From.UserID, msg.MsgID[:8]+"...")
-
-	// 打印详细的解析结果
-	fmt.Printf("🔍 解析后的消息详情:\n")
-	fmt.Printf("  - MsgType: %s\n", msg.MsgType)
-	fmt.Printf("  - MsgID: %s\n", msg.MsgID)
-	fmt.Printf("  - From.UserID: %s\n", msg.From.UserID)
-	fmt.Printf("  - ChatType: %s\n", msg.ChatType)
-	if msg.ChatID != "" {
-		fmt.Printf("  - ChatID: %s\n", msg.ChatID)
-	}
-	if msg.Text != nil {
-		fmt.Printf("  - Text.Content: %s\n", msg.Text.Content)
-	}
-	if msg.Stream != nil {
-		fmt.Printf("  - Stream.ID: %s\n", msg.Stream.ID)
-	}
-	fmt.Printf("=====================================\n")
 
 	// 处理消息
 	var response *WeWorkResponse
@@ -178,7 +147,7 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 	}
 
 	if err != nil {
-		fmt.Printf("❌ 消息处理失败: %v\n", err)
+		// 消息处理失败
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Message processing failed"})
 		return
 	}
@@ -197,7 +166,7 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 	// 转换为JSON
 	responseData, err := response.ToJSON()
 	if err != nil {
-		fmt.Printf("❌ 响应JSON序列化失败: %v\n", err)
+		// 响应JSON序列化失败
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Response serialization failed"})
 		return
 	}
@@ -209,12 +178,12 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 	// Python: EncryptMsg(sReplyMsg, sNonce, timestamp)
 	ret, encryptedResp, err := w.wxcpt.EncryptMsg(string(responseData), nonce, &timestamp)
 	if ret != WXBizMsgCrypt_OK || err != nil {
-		fmt.Printf("❌ 响应加密失败: ret=%d, error=%v\n", ret, err)
+		// 响应加密失败
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Response encryption failed"})
 		return
 	}
 
-	fmt.Printf("✅ 发送加密响应: type=%s\n", response.MsgType)
+	// 发送加密响应
 
 	c.Header("Content-Type", "text/plain")
 	c.String(http.StatusOK, encryptedResp)

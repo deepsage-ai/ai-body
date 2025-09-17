@@ -199,7 +199,7 @@ func (p *Prpcrypt) Decrypt(encryptedText, receiveID string) (int, string, error)
 
 	// 5. 验证receiveID
 	if fromReceiveID != receiveID {
-		fmt.Printf("receiveID不匹配: 期望=%s, 实际=%s\n", receiveID, fromReceiveID)
+		// receiveID不匹配
 		return WXBizMsgCrypt_ValidateCorpid_Error, "", fmt.Errorf("receiveID验证失败")
 	}
 
@@ -352,7 +352,7 @@ func (w *WXBizJsonMsgCrypt) DecryptMsg(postData, msgSignature, timestamp, nonce 
 	}
 
 	if signature != msgSignature {
-		fmt.Printf("签名验证失败: 期望=%s, 实际=%s\n", msgSignature, signature)
+		// 签名验证失败
 		return WXBizMsgCrypt_ValidateSignature_Error, "", fmt.Errorf("签名验证失败")
 	}
 

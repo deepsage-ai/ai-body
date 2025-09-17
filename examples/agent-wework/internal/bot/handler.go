@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,11 +25,12 @@ import (
 
 // === 真正的流式传输架构 - 生产者消费者模式 ===
 
-// StreamBuffer 流式内容缓冲区 - 实现生产者(AI)消费者(企业微信)模式
+// StreamBuffer 流式内容缓冲区 - 实现累积模式（按照Python示例）
 type StreamBuffer struct {
-	chunks     []string     // 待消费的内容块队列
+	chunks     []string     // 所有内容块（累积存储，不移除）
 	mutex      sync.RWMutex // 线程安全锁
 	aiFinished bool         // AI是否完成生成
+	lastIndex  int          // 最后返回的块索引（模拟Python的current_step）
 	lastUpdate time.Time    // 最后更新时间
 }
 
@@ -51,29 +53,31 @@ func (sb *StreamBuffer) Push(content string) {
 
 	sb.chunks = append(sb.chunks, content)
 	sb.lastUpdate = time.Now()
-
-	fmt.Printf("📦 AI生产内容: 长度=%d, 队列大小=%d\n", len(content), len(sb.chunks))
 }
 
-// Consume 企业微信消费缓冲区内容
-func (sb *StreamBuffer) Consume() (string, bool) {
+// GetAccumulated 获取累积内容（严格按照Python的get_answer逻辑）
+func (sb *StreamBuffer) GetAccumulated() (string, bool) {
 	sb.mutex.Lock()
 	defer sb.mutex.Unlock()
 
-	if len(sb.chunks) > 0 {
-		// 有新内容，消费第一块
-		content := sb.chunks[0]
-		sb.chunks = sb.chunks[1:]
+	// 检查是否有新内容可以展示
+	if sb.lastIndex < len(sb.chunks) {
+		// 模拟Python的current_step += 1
+		sb.lastIndex++
 		sb.lastUpdate = time.Now()
 
-		fmt.Printf("🍽️ 企业微信消费内容: 长度=%d, 剩余队列=%d\n", len(content), len(sb.chunks))
+		// 构建累积内容（从第0块到lastIndex-1块）
+		var accumulated strings.Builder
+		for i := 0; i < sb.lastIndex; i++ {
+			accumulated.WriteString(sb.chunks[i])
+		}
+
+		content := accumulated.String()
 		return content, false // 有内容，未完成
 	}
 
 	// 无新内容，检查AI是否完成
 	isFinished := sb.aiFinished
-
-	fmt.Printf("🔍 无新内容: AI完成=%v\n", isFinished)
 	return "", isFinished // 无内容，返回完成状态
 }
 
@@ -84,16 +88,15 @@ func (sb *StreamBuffer) SetAIFinished() {
 
 	sb.aiFinished = true
 	sb.lastUpdate = time.Now()
-
-	fmt.Printf("✅ AI标记完成: 剩余队列=%d\n", len(sb.chunks))
 }
 
-// IsEmpty 检查缓冲区是否为空
+// IsEmpty 检查是否还有未展示的内容
 func (sb *StreamBuffer) IsEmpty() bool {
 	sb.mutex.RLock()
 	defer sb.mutex.RUnlock()
 
-	return len(sb.chunks) == 0
+	// 累积模式：检查是否所有内容都已展示
+	return sb.lastIndex >= len(sb.chunks)
 }
 
 // IsAIFinished 检查AI是否完成
@@ -105,11 +108,11 @@ func (sb *StreamBuffer) IsAIFinished() bool {
 }
 
 // GetStatus 获取缓冲区状态（用于调试）
-func (sb *StreamBuffer) GetStatus() (queueSize int, aiFinished bool) {
+func (sb *StreamBuffer) GetStatus() (totalChunks int, displayedChunks int, aiFinished bool) {
 	sb.mutex.RLock()
 	defer sb.mutex.RUnlock()
 
-	return len(sb.chunks), sb.aiFinished
+	return len(sb.chunks), sb.lastIndex, sb.aiFinished
 }
 
 // TaskInfo 任务信息 - 基于StreamBuffer的真正流式架构
@@ -153,7 +156,7 @@ func (tcm *TaskCacheManager) Close() {
 	for id := range tcm.tasks {
 		delete(tcm.tasks, id)
 	}
-	fmt.Printf("✅ 任务缓存管理器已关闭\n")
+	// 任务缓存管理器已关闭
 }
 
 // generateTaskID 生成任务ID - 严格按照Python示例的_generate_random_string(10)
@@ -195,8 +198,6 @@ func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (strin
 	tcm.tasks[streamID] = task
 	tcm.mutex.Unlock()
 
-	fmt.Printf("📋 创建任务: streamID=%s, question=%s\n", streamID, question)
-
 	// 启动异步AI处理（模拟Python的后台处理）
 	go tcm.processTaskAsync(ctx, streamID)
 
@@ -207,7 +208,7 @@ func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (strin
 func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID string) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("❌ 任务处理异常: streamID=%s, error=%v\n", streamID, r)
+			// 任务处理异常
 		}
 	}()
 
@@ -216,7 +217,7 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	tcm.mutex.RUnlock()
 
 	if !exists {
-		fmt.Printf("❌ 任务不存在: %s\n", streamID)
+		// 任务不存在
 		return
 	}
 
@@ -225,12 +226,13 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	task.LastUpdate = time.Now()
 	task.mutex.Unlock()
 
-	fmt.Printf("🚀 开始异步AI处理: streamID=%s\n", streamID)
+	// ✅ 关键修改：使用streamID作为conversation ID，确保每个任务独立
+	// 这样可以避免同一用户的不同问题之间的memory污染
+	ctx = context.WithValue(ctx, memory.ConversationIDKey, streamID)
 
 	// 调用Agent进行流式处理
 	events, err := tcm.agentInstance.RunStream(ctx, task.Question)
 	if err != nil {
-		fmt.Printf("❌ Agent运行失败: streamID=%s, error=%v\n", streamID, err)
 
 		// 推送错误信息到缓冲区
 		errorMsg := fmt.Sprintf("处理失败: %v", err)
@@ -265,8 +267,6 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 
 	// ✅ 标记AI完成生成（但可能还有内容在缓冲区等待消费）
 	task.Buffer.SetAIFinished()
-
-	fmt.Printf("✅ AI处理完成: streamID=%s\n", streamID)
 }
 
 // GetAnswer 获取当前答案 - 真正的流式消费模式
@@ -279,21 +279,16 @@ func (tcm *TaskCacheManager) GetAnswer(streamID string) string {
 		return "任务不存在或已过期"
 	}
 
-	// ✅ 核心改造：从Buffer消费新内容（消费者模式）
-	newContent, isFinished := task.Buffer.Consume()
+	// ✅ 核心改造：获取累积内容（严格按照Python示例）
+	accumulatedContent, _ := task.Buffer.GetAccumulated()
 
 	// 更新任务状态
 	task.mutex.Lock()
 	task.LastUpdate = time.Now()
 	task.mutex.Unlock()
 
-	// 调试信息
-	queueSize, aiFinished := task.Buffer.GetStatus()
-	fmt.Printf("📊 消费结果: streamID=%s, 新内容长度=%d, AI完成=%v, 队列剩余=%d, 任务完成=%v\n",
-		streamID, len(newContent), aiFinished, queueSize, isFinished)
-
-	// ✅ 关键：只返回新增内容，不返回历史累积内容
-	return newContent
+	// ✅ 关键：返回累积的完整内容（企业微信用此替换整个消息）
+	return accumulatedContent
 }
 
 // IsTaskFinish 检查任务是否完成 - 基于StreamBuffer的真正流式架构
@@ -309,16 +304,11 @@ func (tcm *TaskCacheManager) IsTaskFinish(streamID string) bool {
 	task.mutex.RLock()
 	defer task.mutex.RUnlock()
 
-	// ✅ 新逻辑：AI完成且缓冲区为空才算真正完成
-	// 这确保了所有生成的内容都被企业微信消费完毕
+	// ✅ 新逻辑：AI完成且所有内容都已展示才算真正完成
+	// 这确保了所有生成的内容都被企业微信展示完毕
 	aiFinished := !task.IsProcessing && task.Buffer.IsAIFinished()
-	bufferEmpty := task.Buffer.IsEmpty()
-	isFinished := aiFinished && bufferEmpty
-
-	// 获取缓冲区状态用于调试
-	queueSize, aiComplete := task.Buffer.GetStatus()
-	fmt.Printf("🔍 检查任务完成状态: streamID=%s, finished=%v, processing=%v, aiComplete=%v, queueSize=%d\n",
-		streamID, isFinished, task.IsProcessing, aiComplete, queueSize)
+	allDisplayed := task.Buffer.IsEmpty() // 在累积模式下，IsEmpty表示所有内容都已展示
+	isFinished := aiFinished && allDisplayed
 
 	return isFinished
 }
@@ -343,7 +333,7 @@ func NewBotHandler(cfg *config.WeWorkConfig) (*BotHandler, error) {
 
 	// 初始化任务缓存管理器
 	handler.taskCache = NewTaskCacheManager(handler.agentInstance)
-	fmt.Printf("✅ 任务缓存管理器已初始化\n")
+	// 任务缓存管理器已初始化
 
 	return handler, nil
 }
@@ -363,8 +353,7 @@ func (b *BotHandler) initAgent() error {
 	logger := logging.New()
 
 	// 创建千问客户端配置 - 完全与qwen-http版本一致
-	fmt.Printf("🤖 使用千问模型: %s (支持工具调用)\n", b.config.QwenModel)
-	fmt.Printf("🔗 连接到: %s\n", b.config.QwenBaseURL)
+	// 使用千问模型
 
 	qwenClient := openai.NewClient(b.config.QwenAPIKey,
 		openai.WithBaseURL(b.config.QwenBaseURL),
@@ -375,33 +364,30 @@ func (b *BotHandler) initAgent() error {
 	toolRegistry := tools.NewRegistry()
 
 	// === MCP 按需连接配置 - 完全复用qwen-http版本逻辑 ===
-	fmt.Printf("=== MCP按需连接配置 ===\n")
+	// MCP按需连接配置
 	var mcpServers []interfaces.MCPServer
 
 	// 配置会话级MCP管理器
-	fmt.Printf("🔧 配置会话级MCP管理器: %s\n", b.config.MCPServerURL)
+	// 配置会话级MCP管理器
 
 	// 创建会话级MCP管理器（完全复用qwen-http版本实现）
 	b.sessionMCP = NewSessionMCPManager(b.config.MCPServerURL)
 	mcpServers = append(mcpServers, b.sessionMCP)
-	fmt.Printf("✅ 会话级MCP管理器配置完成（连接复用+去重）\n")
+	// 会话级MCP管理器配置完成
 
 	// 测试连接以验证配置正确性
-	fmt.Printf("🔍 正在测试连接和工具发现...\n")
-	tools, err := b.sessionMCP.ListTools(context.Background())
-	if err != nil {
-		fmt.Printf("⚠️  Warning: 测试连接失败: %v\n", err)
-	} else {
-		fmt.Printf("✅ 发现 %d 个MCP工具:\n", len(tools))
-		for i, tool := range tools {
-			fmt.Printf("  [%d] %s: %s\n", i+1, tool.Name, tool.Description)
-		}
-	}
+	//// 测试连接和工具发现
+	//tools, err := b.sessionMCP.ListTools(context.Background())
+	//if err != nil {
+	//	// 测试连接失败
+	//} else {
+	//	// 发现MCP工具
+	//}
 
 	// === 创建智能体 - 完全复用qwen-http版本逻辑 ===
 	var agentErr error
 	if len(mcpServers) > 0 {
-		fmt.Printf("🚀 创建MCP智能体 (连接 %d 个MCP服务器)...\n", len(mcpServers))
+		// 创建MCP智能体
 		b.agentInstance, agentErr = agent.NewAgent(
 			agent.WithLLM(qwenClient),
 			agent.WithMemory(memory.NewConversationBuffer(memory.WithMaxSize(3))), // 限制记忆大小避免工具消息格式问题
@@ -413,7 +399,7 @@ func (b *BotHandler) initAgent() error {
 			agent.WithName("AIBodyWeWorkAssistant"),
 		)
 	} else {
-		fmt.Printf("🚀 创建基础智能体 (无MCP支持)...\n")
+		// 创建基础智能体
 		b.agentInstance, agentErr = agent.NewAgent(
 			agent.WithLLM(qwenClient),
 			agent.WithMemory(memory.NewConversationBuffer()),
@@ -442,17 +428,12 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 创建上下文
 	ctx := context.Background()
 	ctx = multitenancy.WithOrgID(ctx, "wework-org")
-	ctx = context.WithValue(ctx, memory.ConversationIDKey, msg.GetConversationKey())
-
-	fmt.Printf("🤖 收到text消息: %s (来自: %s)\n", textContent, msg.From.UserID)
-
-	// === 严格按照Python示例流程处理text消息 ===
-	fmt.Printf("📋 按照Python示例创建任务...\n")
+	// ✅ 注意：conversation ID已移至processTaskAsync中使用streamID设置
+	// 这样确保每个任务有独立的对话上下文，避免memory污染
 
 	// 1. 创建任务（模拟Python LLMDemo.invoke()）
 	streamID, err := b.taskCache.Invoke(ctx, textContent)
 	if err != nil {
-		fmt.Printf("❌ 创建任务失败: %v\n", err)
 		return wework.NewTextResponse("系统忙，请稍后再试"), err
 	}
 
@@ -466,10 +447,6 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	if answer == "" && !finish {
 		// 如果没有内容且未完成，返回处理中提示
 		answer = "正在为您思考中..."
-		fmt.Printf("📡 首次返回处理中提示: streamID=%s\n", streamID)
-	} else {
-		fmt.Printf("📡 首次返回内容: streamID=%s, finish=%v, 内容长度=%d\n",
-			streamID, finish, len(answer))
 	}
 
 	// 4. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
@@ -479,29 +456,11 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 
 // HandleStreamRefresh 处理流式消息刷新 - 模拟Python示例的stream消息处理
 func (b *BotHandler) HandleStreamRefresh(streamID string) (*wework.WeWorkResponse, error) {
-	fmt.Printf("🔄 收到stream刷新请求: %s\n", streamID)
-
-	// === 严格按照Python示例流程处理stream消息 ===
-	fmt.Printf("📋 按照Python示例处理stream刷新...\n")
-
 	// 1. 获取最新答案（模拟Python LLMDemo.get_answer()）
 	answer := b.taskCache.GetAnswer(streamID)
 
 	// 2. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
 	finish := b.taskCache.IsTaskFinish(streamID)
-
-	// ✅ 优化返回策略：处理空内容情况
-	if answer == "" && !finish {
-		// 无新内容且未完成，返回空内容（企业微信会继续轮询）
-		fmt.Printf("📡 stream刷新无新内容: streamID=%s, 继续等待AI生成\n", streamID)
-	} else if answer == "" && finish {
-		// 无新内容且已完成，任务结束
-		fmt.Printf("📡 stream刷新完成: streamID=%s, AI处理结束\n", streamID)
-	} else {
-		// 有新内容
-		fmt.Printf("📡 stream刷新有新内容: streamID=%s, finish=%v, 内容长度=%d\n",
-			streamID, finish, len(answer))
-	}
 
 	// 3. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 继续返回，直到finish=true为止
@@ -520,11 +479,11 @@ func (b *BotHandler) GetActiveStreamCount() int {
 	count := 0
 	for _, task := range b.taskCache.tasks {
 		task.mutex.RLock()
-		// 使用新的完成状态检查逻辑
+		// 使用新的完成状态检查逻辑（累积模式）
 		isProcessing := task.IsProcessing
 		aiFinished := task.Buffer.IsAIFinished()
-		bufferEmpty := task.Buffer.IsEmpty()
-		isActive := isProcessing || !aiFinished || !bufferEmpty
+		allDisplayed := task.Buffer.IsEmpty() // 累积模式：所有内容都已展示
+		isActive := isProcessing || !aiFinished || !allDisplayed
 		if isActive {
 			count++
 		}
@@ -570,7 +529,7 @@ func (s *SessionMCPManager) isConnectionAlive() bool {
 
 // createNewConnection 创建新的MCP连接
 func (s *SessionMCPManager) createNewConnection(ctx context.Context) (interfaces.MCPServer, error) {
-	fmt.Printf("[SessionMCP] 创建新连接...\n")
+	// 创建新连接
 
 	server, err := mcp.NewHTTPServer(context.Background(), mcp.HTTPServerConfig{
 		BaseURL: s.baseURL,
@@ -593,7 +552,7 @@ func (s *SessionMCPManager) cleanupConnection() {
 		s.connection = nil
 	}
 	s.sessionActive = false
-	fmt.Printf("[SessionMCP] 连接已清理\n")
+	// 连接已清理
 }
 
 // ensureConnection 确保有活跃的MCP连接（使用时验证）
@@ -605,16 +564,16 @@ func (s *SessionMCPManager) ensureConnection(ctx context.Context) (interfaces.MC
 	if s.connection != nil && s.sessionActive {
 		// 时间检查：超过2分钟自动重建
 		if time.Since(s.lastActivity) > 2*time.Minute {
-			fmt.Printf("[SessionMCP] 连接超时(2分钟)，重建连接\n")
+			// 连接超时，重建连接
 			s.cleanupConnection()
 		} else {
 			// 健康检查：验证连接可用性
 			if s.isConnectionAlive() {
 				s.lastActivity = time.Now()
-				fmt.Printf("[SessionMCP] 复用现有连接\n")
+				// 复用现有连接
 				return s.connection, nil
 			} else {
-				fmt.Printf("[SessionMCP] 连接失效，重建连接\n")
+				// 连接失效，重建连接
 				s.cleanupConnection()
 			}
 		}
@@ -679,7 +638,7 @@ func (s *SessionMCPManager) convertToolSchema(tool interfaces.MCPTool) interface
 
 // CallTool 实现MCPServer接口 - 会话连接复用（无缓存）
 func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
-	fmt.Printf("[SessionMCP] 调用工具: %s\n", name)
+	// 调用工具
 
 	// 获取会话连接
 	server, err := s.ensureConnection(ctx)
@@ -698,7 +657,7 @@ func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args inte
 	s.lastActivity = time.Now()
 	s.mutex.Unlock()
 
-	fmt.Printf("[SessionMCP] 工具调用完成: %s\n", name)
+	// 工具调用完成
 	return response, nil
 }
 
@@ -707,7 +666,7 @@ func (s *SessionMCPManager) Close() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	fmt.Printf("[SessionMCP] 手动关闭会话连接\n")
+	// 手动关闭会话连接
 	s.cleanupConnection()
 	return nil
 }

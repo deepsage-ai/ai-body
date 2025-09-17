@@ -53,6 +53,11 @@ func (sb *StreamBuffer) Push(content string) {
 
 	sb.chunks = append(sb.chunks, content)
 	sb.lastUpdate = time.Now()
+
+	// 调试：输出推送的内容长度
+	if len(sb.chunks) <= 3 || strings.Contains(content, "我是") {
+		fmt.Printf("📝 推送第 %d 块内容 (长度: %d): %.50s...\n", len(sb.chunks), len(content), content)
+	}
 }
 
 // GetAccumulated 获取累积内容（严格按照Python的get_answer逻辑）
@@ -230,6 +235,10 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	// 这样可以避免同一用户的不同问题之间的memory污染
 	ctx = context.WithValue(ctx, memory.ConversationIDKey, streamID)
 
+	// 记录调用分析
+	callCount := 0
+	chunkCount := 0
+
 	// 调用Agent进行流式处理
 	events, err := tcm.agentInstance.RunStream(ctx, task.Question)
 	if err != nil {
@@ -247,10 +256,67 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	}
 
 	// ✅ 关键改造：从累积模式改为推送模式
-	// AI生成内容实时推送到StreamBuffer，供企业微信消费
+	// AI生成内容实时推送到StreamBuffer，供企业微信消趟
+
+	// 跟踪状态，用于识别final call
+	var hasToolCall bool = false
+	var isAfterToolCall bool = false
+
 	for event := range events {
+		// 检查是否有工具调用
+		if event.Type == interfaces.AgentEventToolCall || event.Type == interfaces.AgentEventToolResult {
+			hasToolCall = true
+			isAfterToolCall = true
+		}
+
+		// 检查metadata中的final_call标记
+		var isFinalCall bool
+		if event.Metadata != nil {
+			// 调试：打印metadata内容
+			if len(event.Metadata) > 0 {
+				fmt.Printf("🔍 Event Metadata: %+v\n", event.Metadata)
+			}
+			if fc, ok := event.Metadata["final_call"].(bool); ok && fc {
+				isFinalCall = true
+				fmt.Printf("⚠️ 检测到final call标记\n")
+			}
+		}
+
 		if event.Content != "" {
-			// 推送到缓冲区（生产者模式）
+			chunkCount++
+
+			// ✨ Final Call内容过滤策略
+			// 1. 如果检测到final_call标记，过滤
+			if isFinalCall {
+				fmt.Printf("🛑 过滤final call内容: %.50s...\n", event.Content)
+				continue
+			}
+
+			// 2. 如果已经有工具调用，且内容包含特定模式，过滤
+			if hasToolCall && isAfterToolCall {
+				// 检测是否是final call的特征内容
+				if strings.Contains(event.Content, "示例时间") ||
+					strings.Contains(event.Content, "请让我再次查询") ||
+					strings.Contains(event.Content, "具体时间请以实际查询结果为准") ||
+					(strings.Contains(event.Content, "时间是") && strings.Contains(event.Content, "2023-")) {
+					fmt.Printf("🛑 过滤疑似final call内容: %.50s...\n", event.Content)
+					continue
+				}
+
+				// 3. 如果是"当前的"开头的重复时间描述
+				if strings.HasPrefix(event.Content, "当前的") && strings.Contains(event.Content, "时间是") {
+					fmt.Printf("🛑 过滤重复时间描述: %.50s...\n", event.Content)
+					continue
+				}
+			}
+
+			// 检测是否是新的调用开始（通过内容模式识别）
+			if strings.Contains(event.Content, "企业微信") && strings.Contains(event.Content, "智能助手") {
+				callCount++
+				fmt.Printf("🔍 检测到第 %d 次模型调用开始\n", callCount)
+			}
+
+			// 通过过滤，推送到缓冲区（生产者模式）
 			task.Buffer.Push(event.Content)
 
 			task.mutex.Lock()
@@ -258,6 +324,9 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 			task.mutex.Unlock()
 		}
 	}
+
+	// 输出统计信息
+	fmt.Printf("📊 任务 %s 完成: 检测到 %d 次模型调用, 共 %d 个内容块\n", streamID, callCount, chunkCount)
 
 	// AI处理完成，标记缓冲区状态
 	task.mutex.Lock()

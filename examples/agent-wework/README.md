@@ -151,49 +151,51 @@ agentInstance := agent.NewAgent(
 )
 ```
 
-### 2. 流式消息状态管理
+### 2. 任务缓存管理（模拟Python LLMDemo）
 ```go
-type StreamManager struct {
-    streams    map[string]*StreamState
-    mutex      sync.RWMutex
+type TaskCacheManager struct {
+    tasks         map[string]*TaskInfo
+    agentInstance *agent.Agent
 }
 
-type StreamState struct {
-    ID         string
-    Content    strings.Builder
-    IsActive   bool
-    LastUpdate time.Time
-    EventChan  <-chan agent.StreamEvent
+type TaskInfo struct {
+    StreamID      string
+    Question      string
+    CurrentStep   int
+    MaxSteps      int
+    Content       strings.Builder
+    IsProcessing  bool
+    IsFinished    bool
 }
 ```
 
-### 3. 流式消息处理流程
+### 3. 企业微信流式消息处理流程（严格按照Python示例）
 ```go
-// 首次消息处理
-func (h *Handler) handleFirstMessage(message *WeWorkMessage) {
-    // 1. 生成唯一流式ID
-    streamID := generateStreamID()
+// 处理text消息（类似Python的msgtype=='text'）
+func (h *Handler) HandleMessage(msg *IncomingMessage) {
+    // 1. 创建任务（模拟Python LLMDemo.invoke()）
+    streamID, _ := h.taskCache.Invoke(ctx, textContent)
     
-    // 2. 启动Agent流式处理（与qwen-http完全一致）
-    eventChan, err := h.agent.RunStream(ctx, message.GetTextContent())
+    // 2. 获取第一步答案（模拟Python LLMDemo.get_answer()）
+    answer := h.taskCache.GetAnswer(streamID)
     
-    // 3. 创建流式状态
-    h.streamManager.CreateStream(streamID, eventChan)
+    // 3. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
+    finish := h.taskCache.IsTaskFinish(streamID)
     
-    // 4. 立即返回流式开始消息
-    return h.buildStreamResponse(streamID, "", false)
+    // 4. 返回stream消息（finish=false时企业微信会发送刷新请求）
+    return NewStreamResponse(streamID, answer, finish)
 }
 
-// 流式刷新处理
-func (h *Handler) handleStreamRefresh(streamID string) {
-    // 1. 获取流式状态
-    state := h.streamManager.GetStream(streamID)
+// 处理stream刷新（类似Python的msgtype=='stream'）
+func (h *Handler) HandleStreamRefresh(streamID string) {
+    // 1. 获取最新答案（模拟Python LLMDemo.get_answer()）
+    answer := h.taskCache.GetAnswer(streamID)
     
-    // 2. 处理新的流式事件
-    hasNewContent := h.processStreamEvents(state)
+    // 2. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
+    finish := h.taskCache.IsTaskFinish(streamID)
     
-    // 3. 返回当前内容
-    return h.buildStreamResponse(streamID, state.Content.String(), !state.IsActive)
+    // 3. 返回stream消息（继续直到finish=true）
+    return NewStreamResponse(streamID, answer, finish)
 }
 ```
 

@@ -13,8 +13,8 @@ import (
 
 func main() {
 	// 显示启动信息
-	fmt.Println("🚀 启动 AI-Body 企业微信智能机器人（流式版本）...")
-	fmt.Println("基于qwen-http版本，完整复用SessionMCP管理和流式处理逻辑")
+	fmt.Println("🚀 启动 AI-Body 企业微信智能机器人（Python流式模式）...")
+	fmt.Println("严格模拟Python示例实现，基于TaskCache任务缓存机制实现伪流传输")
 
 	// 加载配置
 	fmt.Println("📋 加载配置...")
@@ -92,9 +92,11 @@ func main() {
 	fmt.Printf("   BotID: %s\n", cfg.MaskSecret(cfg.BotID))
 
 	fmt.Println("\n🎯 核心特性:")
-	fmt.Println("✅ 企业微信原生流式传输")
+	fmt.Println("✅ 严格按照Python官方示例实现流式机制")
+	fmt.Println("✅ TaskCache任务缓存管理（模拟LLMDemo）")
 	fmt.Println("✅ 完全复用qwen-http的SessionMCP逻辑")
 	fmt.Println("✅ 消息加密解密和签名验证")
+	fmt.Println("✅ 企业微信伪流传输（finish=false触发轮询）")
 	fmt.Println("✅ 自动去重和错误处理")
 	fmt.Println("✅ 实时AI工具调用")
 

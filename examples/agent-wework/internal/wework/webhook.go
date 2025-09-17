@@ -13,17 +13,6 @@ import (
 )
 
 // min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// EncryptedRequest 企业微信加密请求结构（JSON格式）
-type EncryptedRequest struct {
-	Encrypt string `json:"encrypt"`
-}
 
 // MessageHandler 消息处理器接口
 type MessageHandler interface {
@@ -117,7 +106,9 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 	}
 
 	// 解析JSON格式的加密请求（智能机器人使用JSON格式）
-	var encReq EncryptedRequest
+	var encReq struct {
+		Encrypt string `json:"encrypt"`
+	}
 	if err := json.Unmarshal(body, &encReq); err != nil {
 		fmt.Printf("❌ JSON解析失败: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
@@ -126,10 +117,10 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 
 	fmt.Printf("🔍 接收到加密消息，encrypt字段长度: %d\n", len(encReq.Encrypt))
 
-	// 构造XML格式传给官方SDK（ToUserName使用BotID）
-	xmlData := fmt.Sprintf(`<xml><ToUserName><![CDATA[%s]]></ToUserName><Encrypt><![CDATA[%s]]></Encrypt></xml>`, w.botID, encReq.Encrypt)
+	// 构造XML格式传给官方SDK（智能机器人ToUserName为空）
+	xmlData := fmt.Sprintf(`<xml><ToUserName><![CDATA[]]></ToUserName><Encrypt><![CDATA[%s]]></Encrypt></xml>`, encReq.Encrypt)
 
-	// 使用官方SDK解密消息
+	// 使用官方SDK解密消息（修正参数顺序）
 	decryptedData, cryptErr := w.wxcpt.DecryptMsg(signature, timestamp, nonce, []byte(xmlData))
 	if nil != cryptErr {
 		fmt.Printf("❌ 消息解密失败: %v\n", cryptErr)
@@ -138,6 +129,9 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 	}
 
 	fmt.Printf("✅ 消息解密成功，解密后内容: %s\n", string(decryptedData))
+	fmt.Printf("🔍 原始解密数据长度: %d 字节\n", len(decryptedData))
+	fmt.Printf("🔍 原始解密数据详情:\n%s\n", string(decryptedData))
+	fmt.Printf("=====================================\n")
 
 	// 解析JSON格式的解密消息
 	msg, err := ParseMessage(decryptedData)
@@ -159,6 +153,23 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 
 	fmt.Printf("📨 收到消息: type=%s, from=%s, msgid=%s\n",
 		msg.MsgType, msg.From.UserID, msg.MsgID[:8]+"...")
+
+	// 打印详细的解析结果
+	fmt.Printf("🔍 解析后的消息详情:\n")
+	fmt.Printf("  - MsgType: %s\n", msg.MsgType)
+	fmt.Printf("  - MsgID: %s\n", msg.MsgID)
+	fmt.Printf("  - From.UserID: %s\n", msg.From.UserID)
+	fmt.Printf("  - ChatType: %s\n", msg.ChatType)
+	if msg.ChatID != "" {
+		fmt.Printf("  - ChatID: %s\n", msg.ChatID)
+	}
+	if msg.Text != nil {
+		fmt.Printf("  - Text.Content: %s\n", msg.Text.Content)
+	}
+	if msg.Stream != nil {
+		fmt.Printf("  - Stream.ID: %s\n", msg.Stream.ID)
+	}
+	fmt.Printf("=====================================\n")
 
 	// 处理消息
 	var response *WeWorkResponse
@@ -199,6 +210,9 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 		return
 	}
 
+	// 调试：打印实际发送的JSON格式
+	fmt.Printf("🔍 发送给企业微信的JSON: %s\n", string(responseData))
+
 	// 使用官方SDK加密响应（参照官方示例）
 	encryptedResp, cryptErr := w.wxcpt.EncryptMsg(string(responseData), timestamp, nonce)
 	if nil != cryptErr {
@@ -209,7 +223,7 @@ func (w *WebhookHandler) sendEncryptedResponse(c *gin.Context, response *WeWorkR
 
 	fmt.Printf("✅ 发送加密响应: type=%s\n", response.MsgType)
 
-	c.Header("Content-Type", "application/xml")
+	c.Header("Content-Type", "text/plain")
 	c.String(http.StatusOK, string(encryptedResp))
 }
 
@@ -243,18 +257,18 @@ func (w *WebhookHandler) recordMessage(msgID string) {
 
 // HealthCheck 健康检查处理器
 func (w *WebhookHandler) HealthCheck(c *gin.Context) {
-	activeStreams := 0
-	if streamManager, ok := w.handler.(interface{ GetActiveStreamCount() int }); ok {
-		activeStreams = streamManager.GetActiveStreamCount()
+	activeTasks := 0
+	if taskManager, ok := w.handler.(interface{ GetActiveStreamCount() int }); ok {
+		activeTasks = taskManager.GetActiveStreamCount()
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":         "healthy",
-		"service":        "AI-Body 企业微信智能机器人（流式版本）",
-		"version":        "1.0.0",
-		"timestamp":      time.Now().Unix(),
-		"cache_size":     len(w.msgCache),
-		"active_streams": activeStreams,
-		"features":       []string{"encryption", "deduplication", "mcp_tools", "streaming"},
+		"status":       "healthy",
+		"service":      "AI-Body 企业微信智能机器人（Python流式模式）",
+		"version":      "1.0.0",
+		"timestamp":    time.Now().Unix(),
+		"cache_size":   len(w.msgCache),
+		"active_tasks": activeTasks,
+		"features":     []string{"encryption", "deduplication", "mcp_tools", "task_cache", "python_stream_mode"},
 	})
 }

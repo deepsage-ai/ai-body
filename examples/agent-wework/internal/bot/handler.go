@@ -2,8 +2,10 @@ package bot
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -21,32 +23,258 @@ import (
 	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/wework"
 )
 
+// === 任务缓存管理器 - 模拟Python LLMDemo类 ===
+
+// TaskInfo 任务信息
+type TaskInfo struct {
+	StreamID     string          `json:"stream_id"`
+	Question     string          `json:"question"`
+	CreatedTime  time.Time       `json:"created_time"`
+	CurrentStep  int             `json:"current_step"`
+	MaxSteps     int             `json:"max_steps"`
+	Content      strings.Builder `json:"-"`             // 累积内容
+	IsProcessing bool            `json:"is_processing"` // AI是否正在处理
+	IsFinished   bool            `json:"is_finished"`   // 是否已完成
+	LastUpdate   time.Time       `json:"last_update"`
+	mutex        sync.RWMutex    `json:"-"`
+}
+
+// TaskCacheManager 任务缓存管理器 - 模拟Python LLMDemo
+type TaskCacheManager struct {
+	tasks         map[string]*TaskInfo
+	mutex         sync.RWMutex
+	agentInstance *agent.Agent // 用于执行AI处理
+}
+
+// NewTaskCacheManager 创建任务缓存管理器
+func NewTaskCacheManager(agentInstance *agent.Agent) *TaskCacheManager {
+	return &TaskCacheManager{
+		tasks:         make(map[string]*TaskInfo),
+		agentInstance: agentInstance,
+	}
+}
+
+// Close 关闭任务缓存管理器
+func (tcm *TaskCacheManager) Close() {
+	tcm.mutex.Lock()
+	defer tcm.mutex.Unlock()
+
+	// 清理所有任务
+	for id := range tcm.tasks {
+		delete(tcm.tasks, id)
+	}
+	fmt.Printf("✅ 任务缓存管理器已关闭\n")
+}
+
+// generateTaskID 生成任务ID - 严格按照Python示例的_generate_random_string(10)
+func generateTaskID() (string, error) {
+	// Python: letters = string.ascii_letters + string.digits
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const length = 10 // Python固定生成10位
+
+	result := make([]byte, length)
+	for i := range result {
+		randomIndex, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			return "", err
+		}
+		result[i] = letters[randomIndex.Int64()]
+	}
+
+	return string(result), nil
+}
+
+// Invoke 创建新任务 - 模拟Python LLMDemo.invoke()
+func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (string, error) {
+	streamID, err := generateTaskID()
+	if err != nil {
+		return "", fmt.Errorf("生成任务ID失败: %w", err)
+	}
+
+	// 创建任务信息
+	task := &TaskInfo{
+		StreamID:     streamID,
+		Question:     question,
+		CreatedTime:  time.Now(),
+		CurrentStep:  0,
+		MaxSteps:     10, // 模拟Python的MAX_STEPS = 10
+		IsProcessing: false,
+		IsFinished:   false,
+		LastUpdate:   time.Now(),
+	}
+
+	tcm.mutex.Lock()
+	tcm.tasks[streamID] = task
+	tcm.mutex.Unlock()
+
+	fmt.Printf("📋 创建任务: streamID=%s, question=%s\n", streamID, question)
+
+	// 启动异步AI处理（模拟Python的后台处理）
+	go tcm.processTaskAsync(ctx, streamID)
+
+	return streamID, nil
+}
+
+// processTaskAsync 异步处理任务
+func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("❌ 任务处理异常: streamID=%s, error=%v\n", streamID, r)
+		}
+	}()
+
+	tcm.mutex.RLock()
+	task, exists := tcm.tasks[streamID]
+	tcm.mutex.RUnlock()
+
+	if !exists {
+		fmt.Printf("❌ 任务不存在: %s\n", streamID)
+		return
+	}
+
+	task.mutex.Lock()
+	task.IsProcessing = true
+	task.LastUpdate = time.Now()
+	task.mutex.Unlock()
+
+	fmt.Printf("🚀 开始异步AI处理: streamID=%s\n", streamID)
+
+	// 调用Agent进行流式处理
+	events, err := tcm.agentInstance.RunStream(ctx, task.Question)
+	if err != nil {
+		fmt.Printf("❌ Agent运行失败: streamID=%s, error=%v\n", streamID, err)
+
+		task.mutex.Lock()
+		task.IsProcessing = false
+		task.IsFinished = true
+		task.Content.WriteString(fmt.Sprintf("处理失败: %v", err))
+		task.LastUpdate = time.Now()
+		task.mutex.Unlock()
+		return
+	}
+
+	// 接收并累积AI事件流
+	for event := range events {
+		task.mutex.Lock()
+		if event.Content != "" {
+			task.Content.WriteString(event.Content)
+			task.LastUpdate = time.Now()
+		}
+		task.mutex.Unlock()
+	}
+
+	// AI处理完成
+	task.mutex.Lock()
+	task.IsProcessing = false
+	task.IsFinished = true
+	task.CurrentStep = task.MaxSteps // 设置为最大步数表示完成
+	task.LastUpdate = time.Now()
+	task.mutex.Unlock()
+
+	fmt.Printf("✅ AI处理完成: streamID=%s\n", streamID)
+}
+
+// GetAnswer 获取当前答案 - 模拟Python LLMDemo.get_answer()
+func (tcm *TaskCacheManager) GetAnswer(streamID string) string {
+	tcm.mutex.RLock()
+	task, exists := tcm.tasks[streamID]
+	tcm.mutex.RUnlock()
+
+	if !exists {
+		return "任务不存在或已过期"
+	}
+
+	task.mutex.Lock()
+	defer task.mutex.Unlock()
+
+	// 更新步数（模拟Python的递增逻辑）
+	if !task.IsFinished && task.CurrentStep < task.MaxSteps {
+		task.CurrentStep++
+		task.LastUpdate = time.Now()
+	}
+
+	// 构造返回内容（模拟Python的格式）
+	response := fmt.Sprintf("收到问题：%s\n\n", task.Question)
+
+	// 如果AI还在处理，显示进度
+	if task.IsProcessing && task.Content.Len() == 0 {
+		for i := 0; i < task.CurrentStep; i++ {
+			response += fmt.Sprintf("处理步骤 %d: 准备中...\n", i+1)
+		}
+	} else {
+		// AI有内容输出，显示实际内容
+		if task.Content.Len() > 0 {
+			response += "AI回复:\n" + task.Content.String()
+		} else {
+			// 还没有内容，显示进度
+			for i := 0; i < task.CurrentStep; i++ {
+				response += fmt.Sprintf("处理步骤 %d: 已完成\n", i+1)
+			}
+		}
+	}
+
+	fmt.Printf("📊 获取答案: streamID=%s, step=%d/%d, 内容长度=%d\n",
+		streamID, task.CurrentStep, task.MaxSteps, len(response))
+
+	return response
+}
+
+// IsTaskFinish 检查任务是否完成 - 模拟Python LLMDemo.is_task_finish()
+func (tcm *TaskCacheManager) IsTaskFinish(streamID string) bool {
+	tcm.mutex.RLock()
+	task, exists := tcm.tasks[streamID]
+	tcm.mutex.RUnlock()
+
+	if !exists {
+		return true // 任务不存在视为已完成
+	}
+
+	task.mutex.RLock()
+	defer task.mutex.RUnlock()
+
+	// 满足以下条件之一视为完成：
+	// 1. 明确标记为已完成
+	// 2. 步数达到最大值
+	// 3. AI处理完成且有内容输出
+	isFinished := task.IsFinished ||
+		task.CurrentStep >= task.MaxSteps ||
+		(!task.IsProcessing && task.Content.Len() > 0)
+
+	fmt.Printf("🔍 检查任务完成状态: streamID=%s, finished=%v, step=%d/%d, processing=%v\n",
+		streamID, isFinished, task.CurrentStep, task.MaxSteps, task.IsProcessing)
+
+	return isFinished
+}
+
 // BotHandler 机器人处理器
 type BotHandler struct {
 	config        *config.WeWorkConfig
 	agentInstance *agent.Agent
-	streamManager *wework.StreamManager
+	taskCache     *TaskCacheManager
 	sessionMCP    *SessionMCPManager
 }
 
 // NewBotHandler 创建机器人处理器
 func NewBotHandler(cfg *config.WeWorkConfig) (*BotHandler, error) {
 	handler := &BotHandler{
-		config:        cfg,
-		streamManager: wework.NewStreamManager(),
+		config: cfg,
 	}
 
 	if err := handler.initAgent(); err != nil {
 		return nil, fmt.Errorf("failed to initialize agent: %w", err)
 	}
 
+	// 初始化任务缓存管理器
+	handler.taskCache = NewTaskCacheManager(handler.agentInstance)
+	fmt.Printf("✅ 任务缓存管理器已初始化\n")
+
 	return handler, nil
 }
 
 // Close 关闭机器人处理器
 func (b *BotHandler) Close() {
-	if b.streamManager != nil {
-		b.streamManager.Close()
+	if b.taskCache != nil {
+		b.taskCache.Close()
 	}
 	if b.sessionMCP != nil {
 		b.sessionMCP.Close()
@@ -139,85 +367,72 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	ctx = multitenancy.WithOrgID(ctx, "wework-org")
 	ctx = context.WithValue(ctx, memory.ConversationIDKey, msg.GetConversationKey())
 
-	fmt.Printf("🤖 处理消息: %s (来自: %s)\n", textContent, msg.From.UserID)
+	fmt.Printf("🤖 收到text消息: %s (来自: %s)\n", textContent, msg.From.UserID)
 
-	// === 使用流式处理 - 严格按照qwen-http模式 ===
-	eventChan, err := b.agentInstance.RunStream(ctx, textContent)
+	// === 严格按照Python示例流程处理text消息 ===
+	fmt.Printf("📋 按照Python示例创建任务...\n")
+
+	// 1. 创建任务（模拟Python LLMDemo.invoke()）
+	streamID, err := b.taskCache.Invoke(ctx, textContent)
 	if err != nil {
-		// 流式传输失败，使用普通模式回退
-		fmt.Printf("⚠️  流式传输不可用，回退到普通模式: %v\n", err)
-		response, normalErr := b.agentInstance.Run(ctx, textContent)
-		if normalErr != nil {
-			return nil, fmt.Errorf("AI处理失败: %w", normalErr)
-		}
-		// 返回文本回复
-		return wework.NewTextResponse(response), nil
+		fmt.Printf("❌ 创建任务失败: %v\n", err)
+		return wework.NewTextResponse("系统忙，请稍后再试"), err
 	}
 
-	// 创建流式状态
-	streamID, err := b.streamManager.CreateStream()
-	if err != nil {
-		return nil, fmt.Errorf("创建流式状态失败: %w", err)
-	}
+	// 2. 获取第一步答案（模拟Python LLMDemo.get_answer()）
+	answer := b.taskCache.GetAnswer(streamID)
 
-	fmt.Printf("📡 开始流式传输: stream_id=%s\n", streamID)
+	// 3. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
+	finish := b.taskCache.IsTaskFinish(streamID)
 
-	// 启动协程处理流式事件 - 完全复用qwen-http逻辑
-	go func() {
-		defer func() {
-			// 标记流式传输完成
-			b.streamManager.UpdateStreamContent(streamID, "", true)
-			fmt.Printf("✅ 流式传输完成: %s\n", streamID)
-		}()
+	fmt.Printf("📡 返回stream消息: streamID=%s, finish=%v, 内容长度=%d\n",
+		streamID, finish, len(answer))
 
-		var responseText strings.Builder
-
-		// 处理真实的流式事件 - 完全复用qwen-http版本的事件处理逻辑
-		for event := range eventChan {
-			// 只处理有内容的事件，忽略调试信息 - 与qwen-http版本一致
-			if event.Content != "" {
-				responseText.WriteString(event.Content)
-
-				// 更新流式状态
-				b.streamManager.UpdateStreamContent(streamID, responseText.String(), false)
-				fmt.Printf("📡 流式更新: %s (长度: %d)\n", streamID, responseText.Len())
-			}
-		}
-	}()
-
-	// 立即返回流式开始消息
-	return wework.NewStreamResponse(streamID, "", false), nil
+	// 4. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
+	// 关键：finish=false时企业微信会发送刷新请求！
+	return wework.NewStreamResponse(streamID, answer, finish), nil
 }
 
-// HandleStreamRefresh 处理流式消息刷新
+// HandleStreamRefresh 处理流式消息刷新 - 模拟Python示例的stream消息处理
 func (b *BotHandler) HandleStreamRefresh(streamID string) (*wework.WeWorkResponse, error) {
-	fmt.Printf("🔄 处理流式刷新: %s\n", streamID)
+	fmt.Printf("🔄 收到stream刷新请求: %s\n", streamID)
 
-	// 获取流式状态
-	state := b.streamManager.GetStream(streamID)
-	if state == nil {
-		// 流式状态不存在，可能已过期
-		return wework.NewTextResponse("对话已结束，请发送新消息开始新的对话。"), nil
-	}
+	// === 严格按照Python示例流程处理stream消息 ===
+	fmt.Printf("📋 按照Python示例处理stream刷新...\n")
 
-	// 获取当前内容和状态
-	content, isActive := state.GetStreamContent()
+	// 1. 获取最新答案（模拟Python LLMDemo.get_answer()）
+	answer := b.taskCache.GetAnswer(streamID)
 
-	if !isActive {
-		// 流式结束，删除状态
-		b.streamManager.DeleteStream(streamID)
-		fmt.Printf("✅ 流式传输完成: %s\n", streamID)
-		return wework.NewStreamResponse(streamID, content, true), nil
-	}
+	// 2. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
+	finish := b.taskCache.IsTaskFinish(streamID)
 
-	// 返回当前累积的内容
-	fmt.Printf("📡 流式传输中: %s (长度: %d)\n", streamID, len(content))
-	return wework.NewStreamResponse(streamID, content, false), nil
+	fmt.Printf("📡 stream刷新结果: streamID=%s, finish=%v, 内容长度=%d\n",
+		streamID, finish, len(answer))
+
+	// 3. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
+	// 继续返回，直到finish=true为止
+	return wework.NewStreamResponse(streamID, answer, finish), nil
 }
 
-// GetActiveStreamCount 获取活跃流式数量
+// GetActiveStreamCount 获取活跃任务数量
 func (b *BotHandler) GetActiveStreamCount() int {
-	return b.streamManager.GetActiveStreamCount()
+	if b.taskCache == nil {
+		return 0
+	}
+
+	b.taskCache.mutex.RLock()
+	defer b.taskCache.mutex.RUnlock()
+
+	count := 0
+	for _, task := range b.taskCache.tasks {
+		task.mutex.RLock()
+		if !task.IsFinished {
+			count++
+		}
+		task.mutex.RUnlock()
+	}
+
+	return count
 }
 
 // === 完全复用qwen-http版本的SessionMCPManager实现 ===

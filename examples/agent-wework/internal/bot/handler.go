@@ -122,13 +122,14 @@ func (sb *StreamBuffer) GetStatus() (totalChunks int, displayedChunks int, aiFin
 
 // TaskInfo 任务信息 - 基于StreamBuffer的真正流式架构
 type TaskInfo struct {
-	StreamID     string        `json:"stream_id"`
-	Question     string        `json:"question"`
-	CreatedTime  time.Time     `json:"created_time"`
-	Buffer       *StreamBuffer `json:"-"`             // 流式缓冲区（替换累积内容）
-	IsProcessing bool          `json:"is_processing"` // AI是否正在处理
-	LastUpdate   time.Time     `json:"last_update"`
-	mutex        sync.RWMutex  `json:"-"`
+	StreamID       string        `json:"stream_id"`
+	Question       string        `json:"question"`
+	ConversationID string        `json:"conversation_id"` // 会话ID（用于记忆连续性）
+	CreatedTime    time.Time     `json:"created_time"`
+	Buffer         *StreamBuffer `json:"-"`             // 流式缓冲区（替换累积内容）
+	IsProcessing   bool          `json:"is_processing"` // AI是否正在处理
+	LastUpdate     time.Time     `json:"last_update"`
+	mutex          sync.RWMutex  `json:"-"`
 
 	// ❌ 已移除的累积模式字段：
 	// CurrentStep  int             - 不再需要固定步数
@@ -139,16 +140,16 @@ type TaskInfo struct {
 
 // TaskCacheManager 任务缓存管理器 - 模拟Python LLMDemo
 type TaskCacheManager struct {
-	tasks         map[string]*TaskInfo
-	mutex         sync.RWMutex
-	agentInstance *agent.Agent // 用于执行AI处理
+	tasks            map[string]*TaskInfo
+	mutex            sync.RWMutex
+	convAgentManager *ConversationAgentManager // 会话级Agent管理器
 }
 
 // NewTaskCacheManager 创建任务缓存管理器
-func NewTaskCacheManager(agentInstance *agent.Agent) *TaskCacheManager {
+func NewTaskCacheManager(convAgentManager *ConversationAgentManager) *TaskCacheManager {
 	return &TaskCacheManager{
-		tasks:         make(map[string]*TaskInfo),
-		agentInstance: agentInstance,
+		tasks:            make(map[string]*TaskInfo),
+		convAgentManager: convAgentManager,
 	}
 }
 
@@ -183,7 +184,7 @@ func generateTaskID() (string, error) {
 }
 
 // Invoke 创建新任务 - 模拟Python LLMDemo.invoke()
-func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (string, error) {
+func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string, conversationID string) (string, error) {
 	streamID, err := generateTaskID()
 	if err != nil {
 		return "", fmt.Errorf("生成任务ID失败: %w", err)
@@ -191,12 +192,13 @@ func (tcm *TaskCacheManager) Invoke(ctx context.Context, question string) (strin
 
 	// 创建任务信息 - 基于StreamBuffer的真正流式架构
 	task := &TaskInfo{
-		StreamID:     streamID,
-		Question:     question,
-		CreatedTime:  time.Now(),
-		Buffer:       NewStreamBuffer(), // ✅ 创建流式缓冲区
-		IsProcessing: false,
-		LastUpdate:   time.Now(),
+		StreamID:       streamID,
+		Question:       question,
+		ConversationID: conversationID, // ✅ 保存会话ID
+		CreatedTime:    time.Now(),
+		Buffer:         NewStreamBuffer(), // ✅ 创建流式缓冲区
+		IsProcessing:   false,
+		LastUpdate:     time.Now(),
 	}
 
 	tcm.mutex.Lock()
@@ -231,16 +233,29 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	task.LastUpdate = time.Now()
 	task.mutex.Unlock()
 
-	// ✅ 关键修改：使用streamID作为conversation ID，确保每个任务独立
-	// 这样可以避免同一用户的不同问题之间的memory污染
-	ctx = context.WithValue(ctx, memory.ConversationIDKey, streamID)
+	// ✅ 关键修改：使用conversationID作为会话标识，实现连续对话记忆
+	// 同一用户/群组的对话会共享记忆上下文
+	ctx = context.WithValue(ctx, memory.ConversationIDKey, task.ConversationID)
+
+	// 获取或创建会话Agent
+	convAgent, err := tcm.convAgentManager.GetOrCreateAgent(task.ConversationID)
+	if err != nil {
+		fmt.Printf("❌ 获取会话Agent失败: %v\n", err)
+		task.Buffer.Push(fmt.Sprintf("系统错误: %v", err))
+		task.Buffer.SetAIFinished()
+		task.mutex.Lock()
+		task.IsProcessing = false
+		task.LastUpdate = time.Now()
+		task.mutex.Unlock()
+		return
+	}
 
 	// 记录调用分析
 	callCount := 0
 	chunkCount := 0
 
 	// 调用Agent进行流式处理
-	events, err := tcm.agentInstance.RunStream(ctx, task.Question)
+	events, err := convAgent.RunStream(ctx, task.Question)
 	if err != nil {
 
 		// 推送错误信息到缓冲区
@@ -382,12 +397,114 @@ func (tcm *TaskCacheManager) IsTaskFinish(streamID string) bool {
 	return isFinished
 }
 
+// ConversationAgent 会话级Agent
+type ConversationAgent struct {
+	agentInstance *agent.Agent
+	lastActivity  time.Time
+	mutex         sync.RWMutex
+}
+
+// ConversationAgentManager 会话级Agent管理器
+type ConversationAgentManager struct {
+	agents     map[string]*ConversationAgent // conversationID -> agent
+	config     *config.WeWorkConfig
+	sessionMCP *SessionMCPManager
+	mutex      sync.RWMutex
+}
+
 // BotHandler 机器人处理器
 type BotHandler struct {
-	config        *config.WeWorkConfig
-	agentInstance *agent.Agent
-	taskCache     *TaskCacheManager
-	sessionMCP    *SessionMCPManager
+	config           *config.WeWorkConfig
+	convAgentManager *ConversationAgentManager // 会话级Agent管理器
+	taskCache        *TaskCacheManager
+	sessionMCP       *SessionMCPManager
+}
+
+// NewConversationAgentManager 创建会话级Agent管理器
+func NewConversationAgentManager(config *config.WeWorkConfig, sessionMCP *SessionMCPManager) *ConversationAgentManager {
+	return &ConversationAgentManager{
+		agents:     make(map[string]*ConversationAgent),
+		config:     config,
+		sessionMCP: sessionMCP,
+	}
+}
+
+// GetOrCreateAgent 获取或创建会话Agent
+func (cam *ConversationAgentManager) GetOrCreateAgent(conversationID string) (*agent.Agent, error) {
+	cam.mutex.Lock()
+	defer cam.mutex.Unlock()
+
+	// 检查是否已存在
+	if convAgent, exists := cam.agents[conversationID]; exists {
+		convAgent.mutex.Lock()
+		convAgent.lastActivity = time.Now()
+		convAgent.mutex.Unlock()
+		fmt.Printf("♻️ 复用会话Agent: %s\n", conversationID)
+		return convAgent.agentInstance, nil
+	}
+
+	// 创建新的Agent
+	fmt.Printf("🆕 创建新会话Agent: %s\n", conversationID)
+	newAgent, err := cam.createNewAgent()
+	if err != nil {
+		return nil, err
+	}
+
+	// 保存到缓存
+	cam.agents[conversationID] = &ConversationAgent{
+		agentInstance: newAgent,
+		lastActivity:  time.Now(),
+	}
+
+	return newAgent, nil
+}
+
+// createNewAgent 创建新的Agent实例
+func (cam *ConversationAgentManager) createNewAgent() (*agent.Agent, error) {
+	logger := logging.New()
+
+	// 创建千问客户端
+	qwenClient := openai.NewClient(cam.config.QwenAPIKey,
+		openai.WithBaseURL(cam.config.QwenBaseURL),
+		openai.WithModel(cam.config.QwenModel),
+		openai.WithLogger(logger))
+
+	// 创建工具注册器
+	toolRegistry := tools.NewRegistry()
+
+	// MCP服务器配置
+	var mcpServers []interfaces.MCPServer
+	if cam.sessionMCP != nil {
+		mcpServers = append(mcpServers, cam.sessionMCP)
+	}
+
+	// 创建Agent
+	var agentInstance *agent.Agent
+	var err error
+
+	if len(mcpServers) > 0 {
+		agentInstance, err = agent.NewAgent(
+			agent.WithLLM(qwenClient),
+			agent.WithMemory(memory.NewConversationBuffer(memory.WithMaxSize(3))),
+			agent.WithTools(toolRegistry.List()...),
+			agent.WithMCPServers(mcpServers),
+			agent.WithRequirePlanApproval(false),
+			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题，请根据用户问题智能选择和调用合适的工具。当你需要获取实时信息（如时间）或执行特定任务时，请主动使用相关工具。请保持回答简洁明了，适合企业微信聊天场景。"),
+			agent.WithMaxIterations(2),
+			agent.WithName("AIBodyWeWorkAssistant"),
+		)
+	} else {
+		agentInstance, err = agent.NewAgent(
+			agent.WithLLM(qwenClient),
+			agent.WithMemory(memory.NewConversationBuffer()),
+			agent.WithTools(toolRegistry.List()...),
+			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。请提供详细和有帮助的回答，保持简洁明了。"),
+			agent.WithMaxIterations(2),
+			agent.WithName("AIBodyWeWorkAssistant"),
+		)
+	}
+
+	return agentInstance, err
 }
 
 // NewBotHandler 创建机器人处理器
@@ -396,13 +513,14 @@ func NewBotHandler(cfg *config.WeWorkConfig) (*BotHandler, error) {
 		config: cfg,
 	}
 
-	if err := handler.initAgent(); err != nil {
-		return nil, fmt.Errorf("failed to initialize agent: %w", err)
-	}
+	// 创建SessionMCP管理器
+	handler.sessionMCP = NewSessionMCPManager(cfg.MCPServerURL)
 
-	// 初始化任务缓存管理器
-	handler.taskCache = NewTaskCacheManager(handler.agentInstance)
-	// 任务缓存管理器已初始化
+	// 创建会话级Agent管理器
+	handler.convAgentManager = NewConversationAgentManager(cfg, handler.sessionMCP)
+
+	// 初始化任务缓存管理器（注意：现在需要传入会话管理器）
+	handler.taskCache = NewTaskCacheManager(handler.convAgentManager)
 
 	return handler, nil
 }
@@ -412,74 +530,23 @@ func (b *BotHandler) Close() {
 	if b.taskCache != nil {
 		b.taskCache.Close()
 	}
+	if b.convAgentManager != nil {
+		b.convAgentManager.Close()
+	}
 	if b.sessionMCP != nil {
 		b.sessionMCP.Close()
 	}
 }
 
-// initAgent 初始化智能体 - 完全复用qwen-http版本逻辑
-func (b *BotHandler) initAgent() error {
-	logger := logging.New()
+// Close 关闭会话Agent管理器
+func (cam *ConversationAgentManager) Close() {
+	cam.mutex.Lock()
+	defer cam.mutex.Unlock()
 
-	// 创建千问客户端配置 - 完全与qwen-http版本一致
-	// 使用千问模型
-
-	qwenClient := openai.NewClient(b.config.QwenAPIKey,
-		openai.WithBaseURL(b.config.QwenBaseURL),
-		openai.WithModel(b.config.QwenModel),
-		openai.WithLogger(logger))
-
-	// 创建工具注册器
-	toolRegistry := tools.NewRegistry()
-
-	// === MCP 按需连接配置 - 完全复用qwen-http版本逻辑 ===
-	// MCP按需连接配置
-	var mcpServers []interfaces.MCPServer
-
-	// 配置会话级MCP管理器
-	// 配置会话级MCP管理器
-
-	// 创建会话级MCP管理器（完全复用qwen-http版本实现）
-	b.sessionMCP = NewSessionMCPManager(b.config.MCPServerURL)
-	mcpServers = append(mcpServers, b.sessionMCP)
-	// 会话级MCP管理器配置完成
-
-	// 测试连接以验证配置正确性
-	//// 测试连接和工具发现
-	//tools, err := b.sessionMCP.ListTools(context.Background())
-	//if err != nil {
-	//	// 测试连接失败
-	//} else {
-	//	// 发现MCP工具
-	//}
-
-	// === 创建智能体 - 完全复用qwen-http版本逻辑 ===
-	var agentErr error
-	if len(mcpServers) > 0 {
-		// 创建MCP智能体
-		b.agentInstance, agentErr = agent.NewAgent(
-			agent.WithLLM(qwenClient),
-			agent.WithMemory(memory.NewConversationBuffer(memory.WithMaxSize(3))), // 限制记忆大小避免工具消息格式问题
-			agent.WithTools(toolRegistry.List()...),
-			agent.WithMCPServers(mcpServers),
-			agent.WithRequirePlanApproval(false), // 自动执行工具，不需要审批
-			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题，请根据用户问题智能选择和调用合适的工具。当你需要获取实时信息（如时间）或执行特定任务时，请主动使用相关工具。请保持回答简洁明了，适合企业微信聊天场景。"),
-			agent.WithMaxIterations(5),
-			agent.WithName("AIBodyWeWorkAssistant"),
-		)
-	} else {
-		// 创建基础智能体
-		b.agentInstance, agentErr = agent.NewAgent(
-			agent.WithLLM(qwenClient),
-			agent.WithMemory(memory.NewConversationBuffer()),
-			agent.WithTools(toolRegistry.List()...),
-			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。请提供详细和有帮助的回答，保持简洁明了。"),
-			agent.WithMaxIterations(5),
-			agent.WithName("AIBodyWeWorkAssistant"),
-		)
+	for id := range cam.agents {
+		delete(cam.agents, id)
 	}
-
-	return agentErr
+	fmt.Println("✅ 会话Agent管理器已关闭")
 }
 
 // HandleMessage 处理普通消息
@@ -501,7 +568,9 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 这样确保每个任务有独立的对话上下文，避免memory污染
 
 	// 1. 创建任务（模拟Python LLMDemo.invoke()）
-	streamID, err := b.taskCache.Invoke(ctx, textContent)
+	// 使用稳定的会话ID确保对话连续性
+	conversationID := msg.GetConversationKey()
+	streamID, err := b.taskCache.Invoke(ctx, textContent, conversationID)
 	if err != nil {
 		return wework.NewTextResponse("系统忙，请稍后再试"), err
 	}

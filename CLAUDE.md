@@ -44,6 +44,40 @@ AI-Body 是一个基于 Go 语言和 agent-sdk-go 框架的智能对话系统。
 - **配置方式**: demo版本直接使用常量配置，避免环境变量复杂性
 - **代码复用**: 各版本完全复用核心SessionMCP管理和智能体逻辑
 
+## 各版本技术特点
+
+### simple-chat 技术细节
+- **最简代码示例**: 展示 agent-sdk-go 基本使用
+- **多租户支持**: 完整的OrgID和ConversationID设置
+- **记忆管理**: ConversationBuffer实现多轮对话
+- **命令行交互**: bufio.Scanner实现用户输入
+
+### streaming-chat 技术细节  
+- **流式事件处理**: RunStream API返回事件channel
+- **事件类型**: ContentDelta、ContentComplete、Error等
+- **实时显示**: 逐字符输出，无缓冲
+- **错误恢复**: 流式错误优雅处理
+
+### MCP版本通用技术
+- **SessionMCPManager**: 2分钟连接复用，3秒健康检查
+- **工具Schema转换**: jsonschema.Schema转map格式
+- **无缓存设计**: 每次工具调用返回实时结果
+- **连接生命周期**: 自动检测失效并重建
+
+### HTTP API版本技术
+- **Gin框架**: 高性能分布式HTTP服务  
+- **SSE实现**: `c.SSEvent` + `c.Writer.Flush()`
+- **统一结构**: 完全复用千问SessionMCP代码
+- **单文件架构**: main.go实现所有功能
+
+### 企业微信版本技术突破
+1. **消息加解密**: 基于Python逻辑的自定义实现
+2. **伪流式传输**: finish=false触发企业微信轮询
+3. **TaskCacheManager**: 模拟Python LLMDemo任务缓存
+4. **StreamBuffer**: 累积模式的线程安全缓冲区  
+5. **ConversationAgentManager**: 会话级Agent实例管理
+6. **Final Call过滤**: 解决agent-sdk-go双重调用问题
+
 ## 开发需求记录
 
 ### 企业微信智能机器人版本需求
@@ -51,14 +85,13 @@ AI-Body 是一个基于 Go 语言和 agent-sdk-go 框架的智能对话系统。
 **参考文档**: 
 - 接收消息文档: https://developer.work.weixin.qq.com/document/path/100719
 - 回复消息文档: https://developer.work.weixin.qq.com/document/path/101031
-**设计要求**: 
-1. 必须先获取准确的企业微信API文档内容
-2. 基于真实API格式设计消息处理流程
-3. 严格按照官方文档实现消息验证和回复机制
-4. 完全复用现有千问版本的SessionMCP管理和智能体逻辑
-5. 实现严谨的错误处理和企业级安全要求
-6. **配置方式**: 使用常量配置而非环境变量，简化demo部署
-**开发原则**: 准确性优于快速实现，必须确保API调用格式的正确性
+- Python官方示例: `/home/kang/Downloads/aibot_demo_python/`
+**开发历程**: 
+1. 发现Content-Type需要为`text/plain`而非`application/xml`
+2. 加密参数顺序为(msg, nonce, timestamp)，与Go SDK不同
+3. 企业微信的stream消息机制：finish=false时会持续发送刷新请求
+4. 实现累积模式而非消费模式，每次返回完整内容
+5. 解决agent-sdk-go的final call导致的重复内容问题
 
 ### 核心技术组件
 
@@ -199,6 +232,55 @@ export CLAUDE_MODEL="claude-sonnet-4-20250514"
 4. **参数格式**: 外部工具有严格的参数要求(如时区使用CST而非Asia/Shanghai)
 
 ### 版本选择建议
+- **入门学习**: 从 simple-chat 和 streaming-chat 开始
 - **本地开发**: 使用Ollama版本，无需API费用
-- **生产部署**: 使用Claude版本，获得更强的推理能力
-- **功能测试**: 两个版本的MCP集成功能完全一致
+- **生产部署**: 使用Claude或千问版本，获得更强的推理能力
+- **API服务**: 使用HTTP API版本，方便集成
+- **企业应用**: 使用企业微信版本，实现IM集成
+
+## 最新更新 (2025-09-17)
+
+### 企业微信版本重大更新
+1. **会话记忆问题修复**: 
+   - 从使用streamID改为使用conversationID作为记忆标识
+   - 实现ConversationAgentManager管理会话级Agent实例
+   - 每个用户/群组拥有独立的对话历史
+
+2. **日志优化**:
+   - 移除所有调试日志输出
+   - 仅保留必要的业务日志
+   - 提升生产环境运行稳定性
+
+3. **技术架构优化**:
+   - 彻底解决agent-sdk-go的final call重复调用问题
+   - 实现完整的会话生命周期管理
+   - 优化内存使用和性能表现
+
+## 重要指导原则
+
+### 代码开发原则
+- **精简直接**: 代码应当简洁明了，避免过度设计
+- **注释最少化**: 除非用户明确要求，不要添加任何注释
+- **遵循惯例**: 严格遵循现有代码风格和项目约定
+- **安全第一**: 不暴露密钥，不记录敏感信息
+
+### 日志处理原则  
+- **生产环境**: 只保留必要的业务日志
+- **调试信息**: 开发阶段使用，生产环境必须移除
+- **格式统一**: 使用项目约定的日志格式
+
+### 任务管理原则
+- **使用TodoWrite**: 对于复杂任务必须使用任务管理工具
+- **及时更新**: 完成任务立即标记为completed
+- **合理拆分**: 大任务拆分为可执行的小任务
+
+### 测试验证原则
+- **编译优先**: 每次修改后首先确保编译通过
+- **功能验证**: 关键功能修改必须进行实际测试
+- **错误处理**: 所有可能的错误都要有处理机制
+
+## important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.

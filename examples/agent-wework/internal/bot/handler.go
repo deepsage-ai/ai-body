@@ -65,20 +65,20 @@ func (sb *StreamBuffer) GetAccumulated() (string, bool) {
 		// 模拟Python的current_step += 1
 		sb.lastIndex++
 		sb.lastUpdate = time.Now()
-
-		// 构建累积内容（从第0块到lastIndex-1块）
-		var accumulated strings.Builder
-		for i := 0; i < sb.lastIndex; i++ {
-			accumulated.WriteString(sb.chunks[i])
-		}
-
-		content := accumulated.String()
-		return content, false // 有内容，未完成
 	}
 
-	// 无新内容，检查AI是否完成
-	isFinished := sb.aiFinished
-	return "", isFinished // 无内容，返回完成状态
+	// 构建累积内容（从第0块到lastIndex-1块）
+	var accumulated strings.Builder
+	for i := 0; i < sb.lastIndex; i++ {
+		accumulated.WriteString(sb.chunks[i])
+	}
+
+	// 检查AI是否完成
+	isFinished := sb.aiFinished && sb.lastIndex >= len(sb.chunks)
+
+	// 关键改动：始终返回累积内容，而不是空字符串
+	content := accumulated.String()
+	return content, isFinished
 }
 
 // SetAIFinished 标记AI完成生成
@@ -235,7 +235,7 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 	// 获取或创建会话Agent
 	convAgent, err := tcm.convAgentManager.GetOrCreateAgent(task.ConversationID)
 	if err != nil {
-		fmt.Printf("❌ 获取会话Agent失败: %v\n", err)
+		// 获取会话Agent失败
 		task.Buffer.Push(fmt.Sprintf("系统错误: %v", err))
 		task.Buffer.SetAIFinished()
 		task.mutex.Lock()
@@ -270,13 +270,19 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 
 	// 跟踪状态，用于识别final call
 	var hasToolCall bool = false
-	var isAfterToolCall bool = false
+
+	var hasNormalContent bool = false // 是否有正常内容生成
 
 	for event := range events {
 		// 检查是否有工具调用
-		if event.Type == interfaces.AgentEventToolCall || event.Type == interfaces.AgentEventToolResult {
+		if event.Type == interfaces.AgentEventToolCall {
 			hasToolCall = true
-			isAfterToolCall = true
+
+			// 不再推送工具调用提示，让用户专注于最终结果
+		} else if event.Type == interfaces.AgentEventToolResult {
+			// 工具结果不直接显示，等待AI整理后的内容
+			hasToolCall = true
+
 		}
 
 		// 检查metadata中的final_call标记
@@ -291,33 +297,19 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 			chunkCount++
 
 			// ✨ Final Call内容过滤策略
-			// 1. 如果检测到final_call标记，过滤
-			if isFinalCall {
+			// 在有工具调用的情况下，不过滤任何内容，让所有内容都能推送
+			// 只有在没有工具调用时，才过滤重复的final call
+			if !hasToolCall && isFinalCall && hasNormalContent {
+				// 没有工具调用，且是final call，且已有内容，才过滤
 				continue
 			}
 
-			// 2. 如果已经有工具调用，且内容包含特定模式，过滤
-			if hasToolCall && isAfterToolCall {
-				// 检测是否是final call的特征内容
-				if strings.Contains(event.Content, "示例时间") ||
-					strings.Contains(event.Content, "请让我再次查询") ||
-					strings.Contains(event.Content, "具体时间请以实际查询结果为准") ||
-					(strings.Contains(event.Content, "时间是") && strings.Contains(event.Content, "2023-")) {
-					fmt.Printf("🛑 过滤疑似final call内容: %.50s...\n", event.Content)
-					continue
-				}
-
-				// 3. 如果是"当前的"开头的重复时间描述
-				if strings.HasPrefix(event.Content, "当前的") && strings.Contains(event.Content, "时间是") {
-					fmt.Printf("🛑 过滤重复时间描述: %.50s...\n", event.Content)
-					continue
-				}
-			}
+			// 标记有正常内容生成
+			hasNormalContent = true
 
 			// 检测是否是新的调用开始（通过内容模式识别）
 			if strings.Contains(event.Content, "企业微信") && strings.Contains(event.Content, "智能助手") {
 				callCount++
-				fmt.Printf("🔍 检测到第 %d 次模型调用开始\n", callCount)
 			}
 
 			// 通过过滤，推送到缓冲区（生产者模式）
@@ -425,12 +417,12 @@ func (cam *ConversationAgentManager) GetOrCreateAgent(conversationID string) (*a
 		convAgent.mutex.Lock()
 		convAgent.lastActivity = time.Now()
 		convAgent.mutex.Unlock()
-		fmt.Printf("♻️ 复用会话Agent: %s\n", conversationID)
+		// 复用会话Agent
 		return convAgent.agentInstance, nil
 	}
 
 	// 创建新的Agent
-	fmt.Printf("🆕 创建新会话Agent: %s\n", conversationID)
+	// 创建新会话Agent
 	newAgent, err := cam.createNewAgent()
 	if err != nil {
 		return nil, err
@@ -532,7 +524,7 @@ func (cam *ConversationAgentManager) Close() {
 	for id := range cam.agents {
 		delete(cam.agents, id)
 	}
-	fmt.Println("✅ 会话Agent管理器已关闭")
+	// 会话Agent管理器已关闭
 }
 
 // HandleMessage 处理普通消息
@@ -573,6 +565,9 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 		answer = "正在为您思考中..."
 	}
 
+	// 记录初始返回内容
+	fmt.Printf("📝 Initial - StreamID: %s, Finish: %v, Content: %s\n", streamID, finish, answer)
+
 	// 4. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 关键：finish=false时企业微信会发送刷新请求！
 	return wework.NewStreamResponse(streamID, answer, finish), nil
@@ -585,6 +580,9 @@ func (b *BotHandler) HandleStreamRefresh(streamID string) (*wework.WeWorkRespons
 
 	// 2. 检查是否完成（模拟Python LLMDemo.is_task_finish()）
 	finish := b.taskCache.IsTaskFinish(streamID)
+
+	// 记录实际返回的文本内容
+	fmt.Printf("📝 StreamID: %s, Finish: %v, Content: %s\n", streamID, finish, answer)
 
 	// 3. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 继续返回，直到finish=true为止

@@ -1,8 +1,8 @@
 {
   "wework": {
-    "token": "LYDMxF6qKEPWVGdKaQdAYw9xxfSzDsIC",
-    "aes_key": "f4gfCYzaqGAfh4rqxWjqG9udsZwI0d3uRlx5cXVUgDu",
-    "bot_id": "aibNFPh36tB2I_wrYlPhlPyOY_fQavVb3mc"
+    "token": "9hLM5K4pnxRu8d",
+    "aes_key": "E2852LABnwUkzMQKciaNNDG2fhOOlQ2kCIwCHNZnrVa",
+    "bot_id": "aib2luFCOChzgjguHi58WvVgwjJoeAHgkQo"
   },
   "llm": {
     "default": "qwen",

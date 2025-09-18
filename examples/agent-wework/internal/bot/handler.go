@@ -54,19 +54,20 @@ func (sb *StreamBuffer) Push(content string) {
 	sb.lastUpdate = time.Now()
 }
 
-// GetAccumulated 获取累积内容（严格按照Python的get_answer逻辑）
+// GetAccumulated 获取累积内容（优化版本：一次性返回所有已生成内容）
 func (sb *StreamBuffer) GetAccumulated() (string, bool) {
 	sb.mutex.Lock()
 	defer sb.mutex.Unlock()
 
-	// 检查是否有新内容可以展示
-	if sb.lastIndex < len(sb.chunks) {
-		// 模拟Python的current_step += 1
-		sb.lastIndex++
+	// 关键修改：直接更新lastIndex到当前chunks长度，而不是每次只加1
+	currentChunkCount := len(sb.chunks)
+	if sb.lastIndex < currentChunkCount {
+		// 一次性更新到当前所有chunks
+		sb.lastIndex = currentChunkCount
 		sb.lastUpdate = time.Now()
 	}
 
-	// 构建累积内容（从第0块到lastIndex-1块）
+	// 构建累积内容（返回所有已生成的内容）
 	var accumulated strings.Builder
 	for i := 0; i < sb.lastIndex; i++ {
 		accumulated.WriteString(sb.chunks[i])
@@ -75,7 +76,7 @@ func (sb *StreamBuffer) GetAccumulated() (string, bool) {
 	// 检查AI是否完成
 	isFinished := sb.aiFinished && sb.lastIndex >= len(sb.chunks)
 
-	// 关键改动：始终返回累积内容，而不是空字符串
+	// 返回累积内容
 	content := accumulated.String()
 	return content, isFinished
 }

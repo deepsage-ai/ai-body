@@ -23,7 +23,7 @@ const (
 	BOT_ID  = "aib2luFCOChzgjguHi58WvVgwjJoeAHgkQo"
 
 	// 服务器地址
-	SERVER_URL = "https://file.wxnanxing.com.cn/b0dy/webhook"
+	SERVER_URL = "http://localhost:8889/b0dy/webhook"
 
 	// 固定的用户ID
 	USER_ID = "test-user-001"

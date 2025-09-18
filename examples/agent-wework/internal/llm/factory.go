@@ -33,6 +33,11 @@ func CreateLLMFromConfig(cfg *config.Config, logger logging.Logger) (interfaces.
 	provider.APIKey = processEnvVar(provider.APIKey)
 	provider.BaseURL = processEnvVar(provider.BaseURL)
 
+	// 如果启用思考模式，输出提示信息
+	if provider.ThinkingMode {
+		fmt.Printf("🧠 深入思考模式已启用 (Provider: %s)\n", provider.Provider)
+	}
+
 	return createLLMClient(provider, logger)
 }
 
@@ -41,36 +46,63 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 	switch config.Provider {
 	case "ollama":
 		// Ollama使用OpenAI兼容接口，不需要API Key
-		return openai.NewClient("",
+		client := openai.NewClient("",
 			openai.WithBaseURL(config.BaseURL),
 			openai.WithModel(config.Model),
-			openai.WithLogger(logger)), nil
+			openai.WithLogger(logger))
+
+		// 如果启用思考模式，创建支持reasoning的包装器
+		if config.ThinkingMode {
+			fmt.Printf("✅ Ollama 深入思考模式已启用 (使用 comprehensive reasoning)\n")
+			return NewOpenAIThinkingWrapper(client), nil
+		}
+
+		return client, nil
 
 	case "qwen":
 		// 千问使用DashScope的OpenAI兼容接口
 		if config.APIKey == "" {
 			return nil, fmt.Errorf("qwen requires API key")
 		}
-		return openai.NewClient(config.APIKey,
+
+		client := openai.NewClient(config.APIKey,
 			openai.WithBaseURL(config.BaseURL),
 			openai.WithModel(config.Model),
-			openai.WithLogger(logger)), nil
+			openai.WithLogger(logger))
+
+		// 如果启用思考模式，创建支持reasoning的包装器
+		if config.ThinkingMode {
+			fmt.Printf("✅ 千问 深入思考模式已启用 (使用 comprehensive reasoning)\n")
+			return NewOpenAIThinkingWrapper(client), nil
+		}
+
+		return client, nil
 
 	case "openai":
 		// 标准OpenAI
 		if config.APIKey == "" {
 			return nil, fmt.Errorf("openai requires API key")
 		}
-		client := openai.NewClient(config.APIKey,
-			openai.WithModel(config.Model),
-			openai.WithLogger(logger))
-		// 如果有自定义BaseURL，设置它
+
+		var client interfaces.LLM
 		if config.BaseURL != "" {
 			client = openai.NewClient(config.APIKey,
 				openai.WithBaseURL(config.BaseURL),
 				openai.WithModel(config.Model),
 				openai.WithLogger(logger))
+		} else {
+			client = openai.NewClient(config.APIKey,
+				openai.WithModel(config.Model),
+				openai.WithLogger(logger))
 		}
+
+		// 如果启用思考模式，创建支持reasoning的包装器
+		// 对于o1系列模型，这会自动启用内部推理
+		if config.ThinkingMode {
+			fmt.Printf("✅ OpenAI 深入思考模式已启用 (模型: %s)\n", config.Model)
+			return NewOpenAIThinkingWrapper(client), nil
+		}
+
 		return client, nil
 
 	case "claude":
@@ -78,9 +110,22 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 		if config.APIKey == "" {
 			return nil, fmt.Errorf("claude requires API key")
 		}
-		return anthropic.NewClient(config.APIKey,
+
+		// 创建基础客户端
+		client := anthropic.NewClient(config.APIKey,
 			anthropic.WithModel(config.Model),
-			anthropic.WithLogger(logger)), nil
+			anthropic.WithLogger(logger))
+
+		// 检查是否支持thinking mode
+		if config.ThinkingMode && anthropic.SupportsThinking(config.Model) {
+			fmt.Printf("✅ 模型 %s 支持深入思考模式\n", config.Model)
+			// 创建包装客户端以启用thinking
+			return NewThinkingLLMWrapper(client, config.Model), nil
+		} else if config.ThinkingMode {
+			fmt.Printf("⚠️  警告: 模型 %s 不支持深入思考模式\n", config.Model)
+		}
+
+		return client, nil
 
 	case "custom":
 		// 自定义OpenAI兼容端点

@@ -5,29 +5,33 @@
     "bot_id": "aib2luFCOChzgjguHi58WvVgwjJoeAHgkQo"
   },
   "llm": {
-    "default": "qwen",
+    "default": "ollama",
     "system_prompt": "# 角色定位\n我是小兴，企业IT部门的智能助手，通过企业微信为员工提供专业、高效的技术支持服务。我致力于提升企业信息技术服务质量，帮助员工快速解决各类IT问题。\n\n# 核心能力\n## 1. 知识理解与应用\n- 掌握全面的IT知识体系，包括操作系统、软件应用、网络故障等领域\n- 理解并准确引用知识库中的技术文档\n- 为复杂技术问题提供专业的解决方案\n\n## 2. 智能支持服务\n- 准确理解用户的技术问题和需求\n- 提供即时的故障排查指导和配置建议\n- 根据用户反馈动态调整解决方案\n\n## 3. MCP工具集成\n- 熟练使用各类MCP工具获取实时数据和执行操作\n- 工具返回的所有内容都是真实数据，直接使用具体数值\n- 绝不使用占位符如[具体时间]、[实际结果]等模糊表述\n\n# 服务原则\n## 1. 严谨专业\n- 回复涉及技术文档时，附带原文内容供用户参考\n- 确保技术方案的准确性和可操作性\n- 基于工具的实际返回数据提供精确信息\n\n## 2. 友好贴心\n- 保持亲切友好的交流态度\n- 提供清晰、分步骤的解决方案\n- 关注用户体验，及时响应需求\n\n## 3. 安全可靠\n- 严格遵守企业数据安全和隐私保护政策\n- 不记录或暴露敏感信息\n- 确保所有操作符合企业IT管理规范\n\n# 交互规范\n1. 始终使用中文进行交流，即使收到英文指令\n2. 保持多轮对话的上下文连贯性\n3. 根据用户情绪和反馈优化服务方式\n4. 工具返回的JSON格式内容是实际数据，需准确解析使用\n5. 在合适的场合自然地使用\"小兴\"这个名字进行自我介绍",
     "providers": {
       "qwen": {
         "provider": "qwen",
         "api_key": "sk-0d8bebab081044f682fbeb6c147d8f2c",
         "model": "qwen-max",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "thinking_mode": true
       },
       "ollama": {
         "provider": "ollama",
         "model": "qwen3:32b",
-        "base_url": "http://10.20.88.156:11434/v1"
+        "base_url": "http://10.20.88.156:11434/v1",
+        "thinking_mode": false
       },
       "claude": {
         "provider": "claude",
         "api_key": "${ANTHROPIC_API_KEY}",
-        "model": "claude-3-sonnet-20240229"
+        "model": "claude-sonnet-4-20250514",
+        "thinking_mode": true
       },
       "openai": {
         "provider": "openai",
         "api_key": "${OPENAI_API_KEY}",
-        "model": "gpt-4-turbo-preview"
+        "model": "gpt-4-turbo-preview",
+        "thinking_mode": false
       }
     }
   },
@@ -37,12 +41,12 @@
         "name": "7soft-tools",
         "type": "http",
         "base_url": "http://sn.7soft.cn/sse",
-        "enabled": true
+        "enabled": false
       },
       {
-        "name": "local-mcp-server",
+        "name": "aio-server",
         "type": "http",
-        "base_url": "http://localhost:8080/sse",
+        "base_url": "http://10.20.88.12:8600/sse",
         "enabled": true
       }
     ]

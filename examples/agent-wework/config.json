@@ -43,7 +43,7 @@
         "name": "local-mcp-server",
         "type": "http",
         "base_url": "http://localhost:8080/sse",
-        "enabled": false
+        "enabled": true
       }
     ]
   },

@@ -56,6 +56,11 @@ func CreateMCPServersFromConfig(cfg *config.Config) ([]interfaces.MCPServer, err
 		fmt.Printf("✅ 添加额外MCP服务器: %s (通过环境变量)\n", extraServer)
 	}
 
+	// 显示MCP服务器配置汇总
+	if len(servers) > 0 {
+		fmt.Printf("✅ MCP工具服务配置完成，成功加载 %d 个服务器\n", len(servers))
+	}
+
 	return servers, nil
 }
 

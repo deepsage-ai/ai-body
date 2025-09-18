@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Ingenimax/agent-sdk-go/pkg/interfaces"
 	"github.com/Ingenimax/agent-sdk-go/pkg/mcp"
@@ -41,8 +42,22 @@ func CreateMCPServersFromConfig(cfg *config.Config) ([]interfaces.MCPServer, err
 		// HTTP类型包装为SessionMCPManager以支持连接复用
 		if serverConfig.Type == "http" {
 			sessionManager := session.NewSessionMCPManager(serverConfig.BaseURL)
+
+			// 尝试初始连接测试
+			testCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			_, testErr := sessionManager.ListTools(testCtx)
+			if testErr != nil {
+				// 分析错误类型并提供友好提示
+				errMsg := analyzeConnectionError(serverConfig.Name, serverConfig.BaseURL, testErr)
+				fmt.Printf("⚠️  警告: MCP服务器 '%s' 连接测试失败\n%s", serverConfig.Name, errMsg)
+				fmt.Printf("   ℹ️  该服务器将被跳过，但您仍可以启动服务\n\n")
+				continue
+			}
+
 			servers = append(servers, sessionManager)
-			fmt.Printf("✅ 配置MCP服务器: %s (HTTP/SSE，支持连接复用)\n", serverConfig.Name)
+			fmt.Printf("✅ 配置MCP服务器: %s (HTTP/SSE，连接正常)\n", serverConfig.Name)
 		} else {
 			servers = append(servers, server)
 			fmt.Printf("✅ 配置MCP服务器: %s (Stdio)\n", serverConfig.Name)
@@ -113,6 +128,53 @@ func processEnvVar(value string) string {
 		return os.Getenv(envVar)
 	}
 	return value
+}
+
+// analyzeConnectionError 分析连接错误并返回友好的错误信息
+func analyzeConnectionError(serverName, url string, err error) string {
+	var msg strings.Builder
+
+	msg.WriteString(fmt.Sprintf("   🔗 服务器: %s\n", url))
+	msg.WriteString(fmt.Sprintf("   ❌ 错误: %v\n", err))
+
+	// 分析具体错误类型
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "connection refused"):
+		msg.WriteString("   💡 可能原因: MCP服务器未启动或端口错误\n")
+		msg.WriteString("   💡 解决方案: \n")
+		msg.WriteString("      1. 确认MCP服务器已启动\n")
+		msg.WriteString("      2. 检查端口是否正确\n")
+		msg.WriteString("      3. 检查防火墙设置\n")
+
+	case strings.Contains(errStr, "timeout"):
+		msg.WriteString("   💡 可能原因: 网络超时或服务器响应慢\n")
+		msg.WriteString("   💡 解决方案: \n")
+		msg.WriteString("      1. 检查网络连接\n")
+		msg.WriteString("      2. 确认服务器地址可访问\n")
+		msg.WriteString("      3. 增加超时时间\n")
+
+	case strings.Contains(errStr, "no such host"):
+		msg.WriteString("   💡 可能原因: 域名无法解析\n")
+		msg.WriteString("   💡 解决方案: \n")
+		msg.WriteString("      1. 检查域名拼写\n")
+		msg.WriteString("      2. 确认DNS设置\n")
+		msg.WriteString("      3. 尝试使用IP地址\n")
+
+	case strings.Contains(errStr, "404"):
+		msg.WriteString("   💡 可能原因: MCP端点路径错误\n")
+		msg.WriteString("   💡 解决方案: \n")
+		msg.WriteString("      1. 确认MCP服务器的正确路径\n")
+		msg.WriteString("      2. 检查是否需要添加路径后缀\n")
+
+	default:
+		msg.WriteString("   💡 解决方案: \n")
+		msg.WriteString("      1. 检查服务器地址和端口\n")
+		msg.WriteString("      2. 确认服务器已启动\n")
+		msg.WriteString("      3. 查看服务器日志\n")
+	}
+
+	return msg.String()
 }
 
 // isDisabledByEnv 检查是否通过环境变量禁用了某个MCP服务器

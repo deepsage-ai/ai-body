@@ -52,7 +52,7 @@ func (s *SessionMCPManager) createNewConnection(ctx context.Context) (interfaces
 		BaseURL: s.baseURL,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("创建MCP连接失败: %w", err)
+		return nil, fmt.Errorf("创建MCP连接失败 (%s): %w", s.baseURL, err)
 	}
 
 	s.connection = server

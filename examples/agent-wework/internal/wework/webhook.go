@@ -123,6 +123,11 @@ func (w *WebhookHandler) handleMessage(c *gin.Context) {
 		return
 	}
 
+	// 记录用户信息
+	if msg.GetTextContent() != "" {
+		fmt.Printf("📝 收到消息 - 用户: %s, 内容: %s\n", msg.From.UserID, msg.GetTextContent())
+	}
+
 	// 消息去重检查
 	if w.isDuplicateMessage(msg.MsgID) {
 		c.String(http.StatusOK, "success") // 企业微信期望返回success

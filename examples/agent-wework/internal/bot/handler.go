@@ -550,6 +550,9 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 		return nil, nil // 无需回复
 	}
 
+	// 统一为所有消息添加用户信息
+	messageWithUserInfo := fmt.Sprintf("[用户 %s]: %s", msg.From.UserID, textContent)
+
 	// 创建上下文
 	ctx := context.Background()
 	ctx = multitenancy.WithOrgID(ctx, "wework-org")
@@ -559,7 +562,7 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 1. 创建任务（模拟Python LLMDemo.invoke()）
 	// 使用稳定的会话ID确保对话连续性
 	conversationID := msg.GetConversationKey()
-	streamID, err := b.taskCache.Invoke(ctx, textContent, conversationID)
+	streamID, err := b.taskCache.Invoke(ctx, messageWithUserInfo, conversationID)
 	if err != nil {
 		return wework.NewTextResponse("系统忙，请稍后再试"), err
 	}

@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
@@ -12,14 +11,14 @@ import (
 
 	"github.com/Ingenimax/agent-sdk-go/pkg/agent"
 	"github.com/Ingenimax/agent-sdk-go/pkg/interfaces"
-	"github.com/Ingenimax/agent-sdk-go/pkg/llm/openai"
 	"github.com/Ingenimax/agent-sdk-go/pkg/logging"
-	"github.com/Ingenimax/agent-sdk-go/pkg/mcp"
 	"github.com/Ingenimax/agent-sdk-go/pkg/memory"
 	"github.com/Ingenimax/agent-sdk-go/pkg/multitenancy"
 	"github.com/Ingenimax/agent-sdk-go/pkg/tools"
 
 	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/config"
+	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/llm"
+	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/mcp"
 	"github.com/deepsage-ai/b0dy/examples/agent-wework/internal/wework"
 )
 
@@ -396,25 +395,25 @@ type ConversationAgent struct {
 // ConversationAgentManager 会话级Agent管理器
 type ConversationAgentManager struct {
 	agents     map[string]*ConversationAgent // conversationID -> agent
-	config     *config.WeWorkConfig
-	sessionMCP *SessionMCPManager
+	config     *config.Config
+	mcpServers []interfaces.MCPServer
 	mutex      sync.RWMutex
 }
 
 // BotHandler 机器人处理器
 type BotHandler struct {
-	config           *config.WeWorkConfig
+	config           *config.Config
 	convAgentManager *ConversationAgentManager // 会话级Agent管理器
 	taskCache        *TaskCacheManager
-	sessionMCP       *SessionMCPManager
+	mcpServers       []interfaces.MCPServer
 }
 
 // NewConversationAgentManager 创建会话级Agent管理器
-func NewConversationAgentManager(config *config.WeWorkConfig, sessionMCP *SessionMCPManager) *ConversationAgentManager {
+func NewConversationAgentManager(config *config.Config, mcpServers []interfaces.MCPServer) *ConversationAgentManager {
 	return &ConversationAgentManager{
 		agents:     make(map[string]*ConversationAgent),
 		config:     config,
-		sessionMCP: sessionMCP,
+		mcpServers: mcpServers,
 	}
 }
 
@@ -452,42 +451,35 @@ func (cam *ConversationAgentManager) GetOrCreateAgent(conversationID string) (*a
 func (cam *ConversationAgentManager) createNewAgent() (*agent.Agent, error) {
 	logger := logging.New()
 
-	// 创建千问客户端
-	qwenClient := openai.NewClient(cam.config.QwenAPIKey,
-		openai.WithBaseURL(cam.config.QwenBaseURL),
-		openai.WithModel(cam.config.QwenModel),
-		openai.WithLogger(logger))
+	// 使用LLM工厂创建LLM客户端
+	llmClient, err := llm.CreateLLMFromConfig(cam.config, logger)
+	if err != nil {
+		return nil, fmt.Errorf("创建LLM客户端失败: %w", err)
+	}
 
 	// 创建工具注册器
 	toolRegistry := tools.NewRegistry()
 
-	// MCP服务器配置
-	var mcpServers []interfaces.MCPServer
-	if cam.sessionMCP != nil {
-		mcpServers = append(mcpServers, cam.sessionMCP)
-	}
-
 	// 创建Agent
 	var agentInstance *agent.Agent
-	var err error
 
-	if len(mcpServers) > 0 {
+	if len(cam.mcpServers) > 0 {
 		agentInstance, err = agent.NewAgent(
-			agent.WithLLM(qwenClient),
+			agent.WithLLM(llmClient),
 			agent.WithMemory(memory.NewConversationBuffer(memory.WithMaxSize(3))),
 			agent.WithTools(toolRegistry.List()...),
-			agent.WithMCPServers(mcpServers),
+			agent.WithMCPServers(cam.mcpServers),
 			agent.WithRequirePlanApproval(false),
-			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题。\n\n重要规则：\n1. 工具返回的所有内容都是真实数据，请直接使用具体数值和信息\n2. 绝对不要生成占位符如[具体时间]、[实际结果]等\n3. 如果工具返回了时间、数据或任何信息，必须在回复中使用完整的实际内容\n4. 即使收到英文指令，也要用中文基于工具的实际返回结果回答用户问题\n5. 工具返回的内容可能看起来像JSON格式，但那是实际数据，不是示例"),
+			agent.WithSystemPrompt(cam.config.LLM.SystemPrompt),
 			agent.WithMaxIterations(5), // 增加迭代次数，避免过早触发final call
 			agent.WithName("AIBodyWeWorkAssistant"),
 		)
 	} else {
 		agentInstance, err = agent.NewAgent(
-			agent.WithLLM(qwenClient),
+			agent.WithLLM(llmClient),
 			agent.WithMemory(memory.NewConversationBuffer()),
 			agent.WithTools(toolRegistry.List()...),
-			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。请提供详细和有帮助的回答，保持简洁明了。"),
+			agent.WithSystemPrompt(cam.config.LLM.SystemPrompt),
 			agent.WithMaxIterations(5), // 增加迭代次数，避免过早触发final call
 			agent.WithName("AIBodyWeWorkAssistant"),
 		)
@@ -497,18 +489,22 @@ func (cam *ConversationAgentManager) createNewAgent() (*agent.Agent, error) {
 }
 
 // NewBotHandler 创建机器人处理器
-func NewBotHandler(cfg *config.WeWorkConfig) (*BotHandler, error) {
-	handler := &BotHandler{
-		config: cfg,
+func NewBotHandler(cfg *config.Config) (*BotHandler, error) {
+	// 创建MCP服务器
+	mcpServers, err := mcp.CreateMCPServersFromConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("创建MCP服务器失败: %w", err)
 	}
 
-	// 创建SessionMCP管理器
-	handler.sessionMCP = NewSessionMCPManager(cfg.MCPServerURL)
+	handler := &BotHandler{
+		config:     cfg,
+		mcpServers: mcpServers,
+	}
 
 	// 创建会话级Agent管理器
-	handler.convAgentManager = NewConversationAgentManager(cfg, handler.sessionMCP)
+	handler.convAgentManager = NewConversationAgentManager(cfg, mcpServers)
 
-	// 初始化任务缓存管理器（注意：现在需要传入会话管理器）
+	// 初始化任务缓存管理器
 	handler.taskCache = NewTaskCacheManager(handler.convAgentManager)
 
 	return handler, nil
@@ -522,8 +518,11 @@ func (b *BotHandler) Close() {
 	if b.convAgentManager != nil {
 		b.convAgentManager.Close()
 	}
-	if b.sessionMCP != nil {
-		b.sessionMCP.Close()
+	// 关闭所有MCP服务器
+	for _, server := range b.mcpServers {
+		if closer, ok := server.(interface{ Close() error }); ok {
+			closer.Close()
+		}
 	}
 }
 
@@ -624,216 +623,4 @@ func (b *BotHandler) GetActiveStreamCount() int {
 	}
 
 	return count
-}
-
-// === 完全复用qwen-http版本的SessionMCPManager实现 ===
-
-// SessionMCPManager - 会话级MCP连接管理器
-// 特性：连接复用 + 健康检查
-type SessionMCPManager struct {
-	baseURL       string
-	connection    interfaces.MCPServer
-	lastActivity  time.Time    // 最后活动时间
-	sessionActive bool         // 会话是否活跃
-	mutex         sync.RWMutex // 读写锁
-}
-
-// NewSessionMCPManager 创建会话级MCP管理器
-func NewSessionMCPManager(baseURL string) *SessionMCPManager {
-	return &SessionMCPManager{
-		baseURL: baseURL,
-		mutex:   sync.RWMutex{},
-	}
-}
-
-// isConnectionAlive 检查连接是否仍然有效
-func (s *SessionMCPManager) isConnectionAlive() bool {
-	if s.connection == nil {
-		return false
-	}
-
-	// 轻量级健康检查：测试ListTools
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	_, err := s.connection.ListTools(ctx)
-	return err == nil
-}
-
-// createNewConnection 创建新的MCP连接
-func (s *SessionMCPManager) createNewConnection(ctx context.Context) (interfaces.MCPServer, error) {
-	// 创建新连接
-
-	server, err := mcp.NewHTTPServer(context.Background(), mcp.HTTPServerConfig{
-		BaseURL: s.baseURL,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建MCP连接失败: %w", err)
-	}
-
-	s.connection = server
-	s.sessionActive = true
-	s.lastActivity = time.Now()
-
-	return server, nil
-}
-
-// cleanupConnection 清理连接和相关状态
-func (s *SessionMCPManager) cleanupConnection() {
-	if s.connection != nil {
-		s.connection.Close()
-		s.connection = nil
-	}
-	s.sessionActive = false
-	// 连接已清理
-}
-
-// ensureConnection 确保有活跃的MCP连接（使用时验证）
-func (s *SessionMCPManager) ensureConnection(ctx context.Context) (interfaces.MCPServer, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// 检查现有连接的有效性
-	if s.connection != nil && s.sessionActive {
-		// 时间检查：超过2分钟自动重建
-		if time.Since(s.lastActivity) > 2*time.Minute {
-			// 连接超时，重建连接
-			s.cleanupConnection()
-		} else {
-			// 健康检查：验证连接可用性
-			if s.isConnectionAlive() {
-				s.lastActivity = time.Now()
-				// 复用现有连接
-				return s.connection, nil
-			} else {
-				// 连接失效，重建连接
-				s.cleanupConnection()
-			}
-		}
-	}
-
-	// 创建新连接
-	return s.createNewConnection(ctx)
-}
-
-// Initialize 实现MCPServer接口
-func (s *SessionMCPManager) Initialize(ctx context.Context) error {
-	server, err := s.ensureConnection(ctx)
-	if err != nil {
-		return err
-	}
-	return server.Initialize(ctx)
-}
-
-// ListTools 实现MCPServer接口 - 使用会话连接
-func (s *SessionMCPManager) ListTools(ctx context.Context) ([]interfaces.MCPTool, error) {
-	server, err := s.ensureConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	tools, err := server.ListTools(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 转换schema格式，确保LLM能正确理解工具参数
-	convertedTools := make([]interfaces.MCPTool, len(tools))
-	for i, tool := range tools {
-		convertedTools[i] = s.convertToolSchema(tool)
-	}
-
-	return convertedTools, nil
-}
-
-// convertToolSchema 将*jsonschema.Schema转换为标准的map格式
-func (s *SessionMCPManager) convertToolSchema(tool interfaces.MCPTool) interfaces.MCPTool {
-	if tool.Schema == nil {
-		return tool
-	}
-
-	// 尝试将*jsonschema.Schema转换为map[string]interface{}
-	if schemaBytes, err := json.Marshal(tool.Schema); err == nil {
-		var schemaMap map[string]interface{}
-		if err := json.Unmarshal(schemaBytes, &schemaMap); err == nil {
-			// 创建新的工具对象，使用转换后的schema
-			return interfaces.MCPTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Schema:      schemaMap, // 使用转换后的map格式
-			}
-		}
-	}
-
-	// 如果转换失败，返回原始工具
-	return tool
-}
-
-// CallTool 实现MCPServer接口 - 会话连接复用（无缓存）
-func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args interface{}) (*interfaces.MCPToolResponse, error) {
-	// 调用工具
-
-	// 获取会话连接
-	server, err := s.ensureConnection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 执行工具调用
-	response, err := server.CallTool(ctx, name, args)
-	if err != nil {
-		return nil, err
-	}
-
-	// 更新活动时间
-	s.mutex.Lock()
-	s.lastActivity = time.Now()
-	s.mutex.Unlock()
-
-	// 🔧 关键修复：转换MCP响应格式
-	// MCP协议返回的Content可能是JSON数组格式：[{"type":"text","text":"actual content"}]
-	// 我们需要提取其中的文本内容，让agent-sdk-go能正确处理
-	if response != nil && response.Content != nil {
-		response.Content = s.extractTextFromMCPContent(response.Content)
-	}
-
-	// 工具调用完成
-	return response, nil
-}
-
-// extractTextFromMCPContent 从MCP响应中提取文本内容
-func (s *SessionMCPManager) extractTextFromMCPContent(content interface{}) interface{} {
-	// 尝试将content转换为[]interface{}（JSON数组）
-	if arr, ok := content.([]interface{}); ok && len(arr) > 0 {
-		// 遍历数组，查找包含text字段的元素
-		var textParts []string
-		for _, item := range arr {
-			if obj, ok := item.(map[string]interface{}); ok {
-				// 检查是否有type="text"和text字段
-				if typeVal, hasType := obj["type"].(string); hasType && typeVal == "text" {
-					if textVal, hasText := obj["text"].(string); hasText {
-						textParts = append(textParts, textVal)
-					}
-				}
-			}
-		}
-
-		// 如果找到文本内容，返回拼接后的字符串
-		if len(textParts) > 0 {
-			return strings.Join(textParts, "\n")
-		}
-	}
-
-	// 如果不是MCP格式，返回原始内容
-	return content
-}
-
-// Close 实现MCPServer接口 - 手动清理会话连接
-func (s *SessionMCPManager) Close() error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// 手动关闭会话连接
-	s.cleanupConnection()
-	return nil
 }

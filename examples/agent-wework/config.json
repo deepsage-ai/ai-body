@@ -1,0 +1,53 @@
+{
+  "wework": {
+    "token": "LYDMxF6qKEPWVGdKaQdAYw9xxfSzDsIC",
+    "aes_key": "f4gfCYzaqGAfh4rqxWjqG9udsZwI0d3uRlx5cXVUgDu",
+    "bot_id": "aibNFPh36tB2I_wrYlPhlPyOY_fQavVb3mc"
+  },
+  "llm": {
+    "default": "qwen",
+    "system_prompt": "你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题。\n\n重要规则：\n1. 工具返回的所有内容都是真实数据，请直接使用具体数值和信息\n2. 绝对不要生成占位符如[具体时间]、[实际结果]等\n3. 如果工具返回了时间、数据或任何信息，必须在回复中使用完整的实际内容\n4. 即使收到英文指令，也要用中文基于工具的实际返回结果回答用户问题\n5. 工具返回的内容可能看起来像JSON格式，但那是实际数据，不是示例",
+    "providers": {
+      "qwen": {
+        "provider": "qwen",
+        "api_key": "sk-0d8bebab081044f682fbeb6c147d8f2c",
+        "model": "qwen-max",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      },
+      "ollama": {
+        "provider": "ollama",
+        "model": "qwen3:32b",
+        "base_url": "http://10.20.88.156:11434/v1"
+      },
+      "claude": {
+        "provider": "claude",
+        "api_key": "${ANTHROPIC_API_KEY}",
+        "model": "claude-3-sonnet-20240229"
+      },
+      "openai": {
+        "provider": "openai",
+        "api_key": "${OPENAI_API_KEY}",
+        "model": "gpt-4-turbo-preview"
+      }
+    }
+  },
+  "mcp": {
+    "servers": [
+      {
+        "name": "7soft-tools",
+        "type": "http",
+        "base_url": "http://sn.7soft.cn/sse",
+        "enabled": true
+      },
+      {
+        "name": "local-mcp-server",
+        "type": "http",
+        "base_url": "http://localhost:8080/sse",
+        "enabled": false
+      }
+    ]
+  },
+  "server": {
+    "port": "8889"
+  }
+}

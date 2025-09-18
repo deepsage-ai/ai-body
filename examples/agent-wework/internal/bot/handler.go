@@ -282,7 +282,12 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 		} else if event.Type == interfaces.AgentEventToolResult {
 			// 工具结果不直接显示，等待AI整理后的内容
 			hasToolCall = true
-
+			// 记录工具结果用于调试
+			if event.Metadata != nil {
+				if result, ok := event.Metadata["result"].(string); ok {
+					fmt.Printf("🔧 工具结果 - %v: %s\n", event.ToolCall, result)
+				}
+			}
 		}
 
 		// 检查metadata中的final_call标记
@@ -296,11 +301,17 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 		if event.Content != "" {
 			chunkCount++
 
+			// 在final call时记录详细信息
+			if isFinalCall && hasToolCall {
+				fmt.Printf("🎯 Final Call内容 (chunk %d): %s\n", chunkCount, event.Content)
+			}
+
 			// ✨ Final Call内容过滤策略
-			// 在有工具调用的情况下，不过滤任何内容，让所有内容都能推送
-			// 只有在没有工具调用时，才过滤重复的final call
-			if !hasToolCall && isFinalCall && hasNormalContent {
-				// 没有工具调用，且是final call，且已有内容，才过滤
+			// 如果已经有正常内容生成，final call是多余的，应该过滤
+			// 因为agent-sdk-go在没有新工具调用时会break并触发final call
+			// 但此时AI可能已经在生成正确的最终回复
+			if isFinalCall && hasNormalContent {
+				// 已有正常内容，过滤final call
 				continue
 			}
 
@@ -467,8 +478,8 @@ func (cam *ConversationAgentManager) createNewAgent() (*agent.Agent, error) {
 			agent.WithTools(toolRegistry.List()...),
 			agent.WithMCPServers(mcpServers),
 			agent.WithRequirePlanApproval(false),
-			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题，请根据用户问题智能选择和调用合适的工具。当你需要获取实时信息（如时间）或执行特定任务时，请主动使用相关工具。请保持回答简洁明了，适合企业微信聊天场景。"),
-			agent.WithMaxIterations(2),
+			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。你可以使用各种MCP工具来帮助回答问题。\n\n重要规则：\n1. 工具返回的所有内容都是真实数据，请直接使用具体数值和信息\n2. 绝对不要生成占位符如[具体时间]、[实际结果]等\n3. 如果工具返回了时间、数据或任何信息，必须在回复中使用完整的实际内容\n4. 即使收到英文指令，也要用中文基于工具的实际返回结果回答用户问题\n5. 工具返回的内容可能看起来像JSON格式，但那是实际数据，不是示例"),
+			agent.WithMaxIterations(5), // 增加迭代次数，避免过早触发final call
 			agent.WithName("AIBodyWeWorkAssistant"),
 		)
 	} else {
@@ -477,7 +488,7 @@ func (cam *ConversationAgentManager) createNewAgent() (*agent.Agent, error) {
 			agent.WithMemory(memory.NewConversationBuffer()),
 			agent.WithTools(toolRegistry.List()...),
 			agent.WithSystemPrompt("你是一个企业微信智能助手，使用中文回答问题。请提供详细和有帮助的回答，保持简洁明了。"),
-			agent.WithMaxIterations(2),
+			agent.WithMaxIterations(5), // 增加迭代次数，避免过早触发final call
 			agent.WithName("AIBodyWeWorkAssistant"),
 		)
 	}
@@ -779,8 +790,42 @@ func (s *SessionMCPManager) CallTool(ctx context.Context, name string, args inte
 	s.lastActivity = time.Now()
 	s.mutex.Unlock()
 
+	// 🔧 关键修复：转换MCP响应格式
+	// MCP协议返回的Content可能是JSON数组格式：[{"type":"text","text":"actual content"}]
+	// 我们需要提取其中的文本内容，让agent-sdk-go能正确处理
+	if response != nil && response.Content != nil {
+		response.Content = s.extractTextFromMCPContent(response.Content)
+	}
+
 	// 工具调用完成
 	return response, nil
+}
+
+// extractTextFromMCPContent 从MCP响应中提取文本内容
+func (s *SessionMCPManager) extractTextFromMCPContent(content interface{}) interface{} {
+	// 尝试将content转换为[]interface{}（JSON数组）
+	if arr, ok := content.([]interface{}); ok && len(arr) > 0 {
+		// 遍历数组，查找包含text字段的元素
+		var textParts []string
+		for _, item := range arr {
+			if obj, ok := item.(map[string]interface{}); ok {
+				// 检查是否有type="text"和text字段
+				if typeVal, hasType := obj["type"].(string); hasType && typeVal == "text" {
+					if textVal, hasText := obj["text"].(string); hasText {
+						textParts = append(textParts, textVal)
+					}
+				}
+			}
+		}
+
+		// 如果找到文本内容，返回拼接后的字符串
+		if len(textParts) > 0 {
+			return strings.Join(textParts, "\n")
+		}
+	}
+
+	// 如果不是MCP格式，返回原始内容
+	return content
 }
 
 // Close 实现MCPServer接口 - 手动清理会话连接

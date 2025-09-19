@@ -2,10 +2,11 @@ package config
 
 // Config 完整的应用配置
 type Config struct {
-	WeWork WeWorkConfig `json:"wework"`
-	LLM    LLMConfigs   `json:"llm"`
-	MCP    MCPConfigs   `json:"mcp"`
-	Server ServerConfig `json:"server"`
+	WeWork  WeWorkConfig  `json:"wework"`
+	LLM     LLMConfigs    `json:"llm"`
+	MCP     MCPConfigs    `json:"mcp"`
+	Server  ServerConfig  `json:"server"`
+	Logging LoggingConfig `json:"logging"`
 }
 
 // WeWorkConfig 企业微信配置
@@ -56,4 +57,10 @@ type MCPServerConfig struct {
 // ServerConfig HTTP服务器配置
 type ServerConfig struct {
 	Port string `json:"port"`
+}
+
+// LoggingConfig 日志配置
+type LoggingConfig struct {
+	Enabled bool   `json:"enabled"` // 是否启用日志
+	LogDir  string `json:"log_dir"` // 日志目录
 }

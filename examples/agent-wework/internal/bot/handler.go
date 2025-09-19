@@ -407,6 +407,7 @@ type BotHandler struct {
 	convAgentManager *ConversationAgentManager // 会话级Agent管理器
 	taskCache        *TaskCacheManager
 	mcpServers       []interfaces.MCPServer
+	logger           *ChatLogger // 聊天日志记录器
 }
 
 // NewConversationAgentManager 创建会话级Agent管理器
@@ -508,6 +509,18 @@ func NewBotHandler(cfg *config.Config) (*BotHandler, error) {
 	// 初始化任务缓存管理器
 	handler.taskCache = NewTaskCacheManager(handler.convAgentManager)
 
+	// 初始化日志记录器（如果启用）
+	if cfg.Logging.Enabled {
+		logger, err := NewChatLogger(cfg.Logging.LogDir)
+		if err != nil {
+			// 日志初始化失败不影响主程序运行，只打印警告
+			fmt.Printf("⚠️  警告：初始化聊天日志失败: %v\n", err)
+		} else {
+			handler.logger = logger
+			fmt.Printf("✅ 聊天日志已启用，日志目录: %s\n", cfg.Logging.LogDir)
+		}
+	}
+
 	return handler, nil
 }
 
@@ -523,6 +536,12 @@ func (b *BotHandler) Close() {
 	for _, server := range b.mcpServers {
 		if closer, ok := server.(interface{ Close() error }); ok {
 			closer.Close()
+		}
+	}
+	// 关闭日志记录器
+	if b.logger != nil {
+		if err := b.logger.Close(); err != nil {
+			fmt.Printf("关闭聊天日志失败: %v\n", err)
 		}
 	}
 }
@@ -562,6 +581,15 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 1. 创建任务（模拟Python LLMDemo.invoke()）
 	// 使用稳定的会话ID确保对话连续性
 	conversationID := msg.GetConversationKey()
+
+	// 记录用户消息到日志文件
+	if b.logger != nil {
+		if err := b.logger.LogMessage(conversationID, msg.From.UserID, textContent); err != nil {
+			// 日志记录失败不影响主流程，只记录错误
+			fmt.Printf("记录聊天日志失败: %v\n", err)
+		}
+	}
+
 	streamID, err := b.taskCache.Invoke(ctx, messageWithUserInfo, conversationID)
 	if err != nil {
 		return wework.NewTextResponse("系统忙，请稍后再试"), err

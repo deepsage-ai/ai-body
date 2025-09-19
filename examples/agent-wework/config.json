@@ -53,5 +53,9 @@
   },
   "server": {
     "port": "8889"
+  },
+  "logging": {
+    "enabled": true,
+    "log_dir": "logs"
   }
 }

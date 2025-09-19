@@ -1,2 +1,15 @@
 .idea
 b0dy
+
+# 编译生成的二进制文件
+agent-wework
+examples/agent-wework/agent-wework
+
+# 日志目录和文件
+logs/
+*.log
+
+# 测试生成的文件
+test-mcp-prompts
+test-mcp-prompts-correct
+test-mcp-prompts-async

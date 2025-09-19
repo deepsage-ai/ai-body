@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -76,8 +77,8 @@ func (sb *StreamBuffer) GetAccumulated() (string, bool) {
 	// 检查AI是否完成
 	isFinished := sb.aiFinished && sb.lastIndex >= len(sb.chunks)
 
-	// 返回累积内容
-	content := accumulated.String()
+	// 合并多个think标签（企业微信只能识别一个）
+	content := mergeThinkTags(accumulated.String())
 	return content, isFinished
 }
 
@@ -648,4 +649,43 @@ func (b *BotHandler) GetActiveStreamCount() int {
 	}
 
 	return count
+}
+
+// mergeThinkTags 合并多个think标签为一个（企业微信只识别第一个）
+func mergeThinkTags(content string) string {
+	// 如果内容为空或不包含think标签，直接返回
+	if content == "" || !strings.Contains(content, "<think>") {
+		return content
+	}
+
+	// 使用正则表达式匹配所有的think标签及其内容
+	thinkRegex := regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+	matches := thinkRegex.FindAllStringSubmatch(content, -1)
+
+	// 如果没有匹配或只有一个think标签，直接返回
+	if len(matches) <= 1 {
+		return content
+	}
+
+	// 收集所有think内容
+	var thinkContents []string
+	for _, match := range matches {
+		if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+			thinkContents = append(thinkContents, strings.TrimSpace(match[1]))
+		}
+	}
+
+	// 移除所有think标签
+	cleanContent := thinkRegex.ReplaceAllString(content, "")
+
+	// 如果没有收集到think内容，返回清理后的内容
+	if len(thinkContents) == 0 {
+		return cleanContent
+	}
+
+	// 合并所有think内容，用换行分隔
+	mergedThink := "<think>\n" + strings.Join(thinkContents, "\n\n") + "\n</think>\n"
+
+	// 将合并后的think标签放在内容开头
+	return mergedThink + strings.TrimSpace(cleanContent)
 }

@@ -303,7 +303,6 @@ func (tcm *TaskCacheManager) processTaskAsync(ctx context.Context, streamID stri
 
 			// 在final call时记录详细信息
 			if isFinalCall && hasToolCall {
-				fmt.Printf("🎯 Final Call内容 (chunk %d): %s\n", chunkCount, event.Content)
 			}
 
 			// ✨ Final Call内容过滤策略
@@ -514,10 +513,8 @@ func NewBotHandler(cfg *config.Config) (*BotHandler, error) {
 		logger, err := NewChatLogger(cfg.Logging.LogDir)
 		if err != nil {
 			// 日志初始化失败不影响主程序运行，只打印警告
-			fmt.Printf("⚠️  警告：初始化聊天日志失败: %v\n", err)
 		} else {
 			handler.logger = logger
-			fmt.Printf("✅ 聊天日志已启用，日志目录: %s\n", cfg.Logging.LogDir)
 		}
 	}
 
@@ -541,7 +538,6 @@ func (b *BotHandler) Close() {
 	// 关闭日志记录器
 	if b.logger != nil {
 		if err := b.logger.Close(); err != nil {
-			fmt.Printf("关闭聊天日志失败: %v\n", err)
 		}
 	}
 }
@@ -585,8 +581,7 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	// 记录用户消息到日志文件
 	if b.logger != nil {
 		if err := b.logger.LogMessage(conversationID, msg.From.UserID, textContent); err != nil {
-			// 日志记录失败不影响主流程，只记录错误
-			fmt.Printf("记录聊天日志失败: %v\n", err)
+			// 日志记录失败不影响主流程
 		}
 	}
 
@@ -608,7 +603,6 @@ func (b *BotHandler) HandleMessage(msg *wework.IncomingMessage) (*wework.WeWorkR
 	}
 
 	// 记录初始返回内容
-	fmt.Printf("📝 Initial - StreamID: %s, Finish: %v, Content: %s\n", streamID, finish, answer)
 
 	// 4. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 关键：finish=false时企业微信会发送刷新请求！
@@ -624,7 +618,6 @@ func (b *BotHandler) HandleStreamRefresh(streamID string) (*wework.WeWorkRespons
 	finish := b.taskCache.IsTaskFinish(streamID)
 
 	// 记录实际返回的文本内容
-	fmt.Printf("📝 StreamID: %s, Finish: %v, Content: %s\n", streamID, finish, answer)
 
 	// 3. 返回stream消息（模拟Python MakeTextStream + EncryptMessage）
 	// 继续返回，直到finish=true为止

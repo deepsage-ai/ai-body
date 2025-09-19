@@ -10,7 +10,8 @@ import (
 // OpenAIThinkingWrapper 包装OpenAI兼容的LLM客户端以启用reasoning mode
 type OpenAIThinkingWrapper struct {
 	wrapped        interfaces.LLM
-	reasoningLevel string // "comprehensive" 或 "minimal"
+	reasoningLevel string  // "comprehensive" 或 "minimal"
+	temperature    float64 // 温度控制，0表示使用默认值
 }
 
 // NewOpenAIThinkingWrapper 创建一个启用reasoning mode的OpenAI包装器
@@ -18,6 +19,7 @@ func NewOpenAIThinkingWrapper(wrapped interfaces.LLM) *OpenAIThinkingWrapper {
 	return &OpenAIThinkingWrapper{
 		wrapped:        wrapped,
 		reasoningLevel: "minimal", // 默认简洁推理，确保回复精炼
+		temperature:    0,         // 0表示不设置，使用模型默认值
 	}
 }
 
@@ -26,13 +28,26 @@ func NewOpenAIThinkingWrapperWithLevel(wrapped interfaces.LLM, level string) *Op
 	return &OpenAIThinkingWrapper{
 		wrapped:        wrapped,
 		reasoningLevel: level,
+		temperature:    0,
 	}
+}
+
+// WithTemperature 设置温度（链式调用）
+func (w *OpenAIThinkingWrapper) WithTemperature(temp float64) *OpenAIThinkingWrapper {
+	w.temperature = temp
+	return w
 }
 
 // Generate implements interfaces.LLM.Generate
 func (w *OpenAIThinkingWrapper) Generate(ctx context.Context, prompt string, options ...interfaces.GenerateOption) (string, error) {
 	// 使用配置的推理级别
 	options = append(options, openai.WithReasoning(w.reasoningLevel))
+
+	// 如果设置了温度，添加温度选项
+	if w.temperature > 0 {
+		options = append(options, openai.WithTemperature(w.temperature))
+	}
+
 	return w.wrapped.Generate(ctx, prompt, options...)
 }
 
@@ -40,6 +55,12 @@ func (w *OpenAIThinkingWrapper) Generate(ctx context.Context, prompt string, opt
 func (w *OpenAIThinkingWrapper) GenerateStream(ctx context.Context, prompt string, options ...interfaces.GenerateOption) (<-chan interfaces.StreamEvent, error) {
 	// 使用配置的推理级别
 	options = append(options, openai.WithReasoning(w.reasoningLevel))
+
+	// 如果设置了温度，添加温度选项
+	if w.temperature > 0 {
+		options = append(options, openai.WithTemperature(w.temperature))
+	}
+
 	return w.wrapped.(interfaces.StreamingLLM).GenerateStream(ctx, prompt, options...)
 }
 
@@ -47,6 +68,12 @@ func (w *OpenAIThinkingWrapper) GenerateStream(ctx context.Context, prompt strin
 func (w *OpenAIThinkingWrapper) GenerateWithTools(ctx context.Context, prompt string, tools []interfaces.Tool, options ...interfaces.GenerateOption) (string, error) {
 	// 使用配置的推理级别
 	options = append(options, openai.WithReasoning(w.reasoningLevel))
+
+	// 如果设置了温度，添加温度选项
+	if w.temperature > 0 {
+		options = append(options, openai.WithTemperature(w.temperature))
+	}
+
 	return w.wrapped.GenerateWithTools(ctx, prompt, tools, options...)
 }
 
@@ -54,6 +81,12 @@ func (w *OpenAIThinkingWrapper) GenerateWithTools(ctx context.Context, prompt st
 func (w *OpenAIThinkingWrapper) GenerateWithToolsStream(ctx context.Context, prompt string, tools []interfaces.Tool, options ...interfaces.GenerateOption) (<-chan interfaces.StreamEvent, error) {
 	// 使用配置的推理级别
 	options = append(options, openai.WithReasoning(w.reasoningLevel))
+
+	// 如果设置了温度，添加温度选项
+	if w.temperature > 0 {
+		options = append(options, openai.WithTemperature(w.temperature))
+	}
+
 	return w.wrapped.(interfaces.StreamingLLM).GenerateWithToolsStream(ctx, prompt, tools, options...)
 }
 

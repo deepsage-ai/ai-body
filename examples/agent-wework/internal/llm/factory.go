@@ -49,9 +49,7 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 		client := openai.NewClient("",
 			openai.WithBaseURL(config.BaseURL),
 			openai.WithModel(config.Model),
-			openai.WithLogger(logger),
-			// 添加温度控制，让输出更确定性
-			openai.WithTemperature(0.3))
+			openai.WithLogger(logger))
 
 		// 如果启用思考模式，创建支持reasoning的包装器
 		if config.ThinkingMode {
@@ -59,8 +57,18 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 			if reasoningLevel == "" {
 				reasoningLevel = "minimal" // 默认简洁
 			}
-			fmt.Printf("✅ Ollama 思考模式已启用 (推理级别: %s)\n", reasoningLevel)
-			return NewOpenAIThinkingWrapperWithLevel(client, reasoningLevel), nil
+			fmt.Printf("✅ Ollama 思考模式已启用 (推理级别: %s", reasoningLevel)
+
+			wrapper := NewOpenAIThinkingWrapperWithLevel(client, reasoningLevel)
+
+			// 如果配置了温度，设置温度
+			if config.Temperature > 0 {
+				wrapper.WithTemperature(config.Temperature)
+				fmt.Printf(", 温度: %.1f", config.Temperature)
+			}
+
+			fmt.Printf(")\n")
+			return wrapper, nil
 		}
 
 		return client, nil

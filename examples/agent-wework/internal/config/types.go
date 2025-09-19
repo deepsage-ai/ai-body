@@ -25,11 +25,12 @@ type LLMConfigs struct {
 
 // LLMProviderConfig 单个LLM提供商配置
 type LLMProviderConfig struct {
-	Provider     string `json:"provider"`           // 提供商类型: qwen, ollama, claude, openai, custom
-	APIKey       string `json:"api_key,omitempty"`  // API密钥（某些提供商需要）
-	Model        string `json:"model"`              // 模型名称
-	BaseURL      string `json:"base_url,omitempty"` // API基础URL（可选）
-	ThinkingMode bool   `json:"thinking_mode"`      // 深入思考模式开关
+	Provider       string `json:"provider"`                  // 提供商类型: qwen, ollama, claude, openai, custom
+	APIKey         string `json:"api_key,omitempty"`         // API密钥（某些提供商需要）
+	Model          string `json:"model"`                     // 模型名称
+	BaseURL        string `json:"base_url,omitempty"`        // API基础URL（可选）
+	ThinkingMode   bool   `json:"thinking_mode"`             // 深入思考模式开关
+	ReasoningLevel string `json:"reasoning_level,omitempty"` // 推理等级: minimal(简洁) 或 comprehensive(详细)
 }
 
 // MCPConfigs MCP服务器配置集合

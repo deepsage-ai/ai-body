@@ -13,25 +13,29 @@
         "api_key": "sk-0d8bebab081044f682fbeb6c147d8f2c",
         "model": "qwen-max",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "thinking_mode": true
+        "thinking_mode": true,
+        "reasoning_level": "minimal"
       },
       "ollama": {
         "provider": "ollama",
         "model": "qwen3:32b",
         "base_url": "http://10.20.88.156:11434/v1",
-        "thinking_mode": false
+        "thinking_mode": false,
+        "reasoning_level": "minimal"
       },
       "claude": {
         "provider": "claude",
         "api_key": "${ANTHROPIC_API_KEY}",
         "model": "claude-sonnet-4-20250514",
-        "thinking_mode": true
+        "thinking_mode": true,
+        "reasoning_level": "minimal"
       },
       "openai": {
         "provider": "openai",
         "api_key": "${OPENAI_API_KEY}",
         "model": "gpt-4-turbo-preview",
-        "thinking_mode": false
+        "thinking_mode": false,
+        "reasoning_level": "minimal"
       }
     }
   },

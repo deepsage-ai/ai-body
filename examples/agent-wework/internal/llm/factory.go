@@ -49,12 +49,18 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 		client := openai.NewClient("",
 			openai.WithBaseURL(config.BaseURL),
 			openai.WithModel(config.Model),
-			openai.WithLogger(logger))
+			openai.WithLogger(logger),
+			// 添加温度控制，让输出更确定性
+			openai.WithTemperature(0.3))
 
 		// 如果启用思考模式，创建支持reasoning的包装器
 		if config.ThinkingMode {
-			fmt.Printf("✅ Ollama 深入思考模式已启用 (使用 comprehensive reasoning)\n")
-			return NewOpenAIThinkingWrapper(client), nil
+			reasoningLevel := config.ReasoningLevel
+			if reasoningLevel == "" {
+				reasoningLevel = "minimal" // 默认简洁
+			}
+			fmt.Printf("✅ Ollama 思考模式已启用 (推理级别: %s)\n", reasoningLevel)
+			return NewOpenAIThinkingWrapperWithLevel(client, reasoningLevel), nil
 		}
 
 		return client, nil
@@ -72,8 +78,12 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 
 		// 如果启用思考模式，创建支持reasoning的包装器
 		if config.ThinkingMode {
-			fmt.Printf("✅ 千问 深入思考模式已启用 (使用 comprehensive reasoning)\n")
-			return NewOpenAIThinkingWrapper(client), nil
+			reasoningLevel := config.ReasoningLevel
+			if reasoningLevel == "" {
+				reasoningLevel = "minimal" // 默认简洁
+			}
+			fmt.Printf("✅ 千问 思考模式已启用 (推理级别: %s)\n", reasoningLevel)
+			return NewOpenAIThinkingWrapperWithLevel(client, reasoningLevel), nil
 		}
 
 		return client, nil
@@ -99,8 +109,12 @@ func createLLMClient(config config.LLMProviderConfig, logger logging.Logger) (in
 		// 如果启用思考模式，创建支持reasoning的包装器
 		// 对于o1系列模型，这会自动启用内部推理
 		if config.ThinkingMode {
-			fmt.Printf("✅ OpenAI 深入思考模式已启用 (模型: %s)\n", config.Model)
-			return NewOpenAIThinkingWrapper(client), nil
+			reasoningLevel := config.ReasoningLevel
+			if reasoningLevel == "" {
+				reasoningLevel = "minimal" // 默认简洁
+			}
+			fmt.Printf("✅ OpenAI 思考模式已启用 (模型: %s, 推理级别: %s)\n", config.Model, reasoningLevel)
+			return NewOpenAIThinkingWrapperWithLevel(client, reasoningLevel), nil
 		}
 
 		return client, nil
